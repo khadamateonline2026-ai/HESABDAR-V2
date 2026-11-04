@@ -803,3 +803,41 @@ html.app-busy::after {
 }
 
 
+
+/* Login / reset-password fields: identical bg in empty, filled, autofill, focus */
+.login-sheet {
+  --login-field-bg: color-mix(in oklab, #ffffff 14%, var(--color-bg));
+}
+html.theme-light .login-sheet {
+  --login-field-bg: var(--color-surface);
+}
+
+.login-sheet input.login-field,
+.login-sheet input.login-field:hover,
+.login-sheet input.login-field:focus,
+.login-sheet input.login-field:autofill,
+.login-sheet input.login-field:autofill:hover,
+.login-sheet input.login-field:autofill:focus,
+.login-sheet input.login-field:-webkit-autofill,
+.login-sheet input.login-field:-webkit-autofill:hover,
+.login-sheet input.login-field:-webkit-autofill:focus,
+.login-sheet input.login-field:-webkit-autofill:active {
+  color: var(--color-fg) !important;
+  -webkit-text-fill-color: var(--color-fg) !important;
+  caret-color: var(--color-fg);
+  background-color: var(--login-field-bg) !important;
+  background-image: none !important;
+  -webkit-box-shadow: 0 0 0 1000px var(--login-field-bg) inset !important;
+  box-shadow: 0 0 0 1000px var(--login-field-bg) inset !important;
+  transition: background-color 99999s ease-out 0s, background-image 99999s ease-out 0s;
+}
+
+.login-sheet input.login-field:focus {
+  border-color: var(--color-primary);
+  -webkit-box-shadow:
+    0 0 0 1000px var(--login-field-bg) inset,
+    0 0 0 3px color-mix(in oklab, var(--color-primary) 18%, transparent) !important;
+  box-shadow:
+    0 0 0 1000px var(--login-field-bg) inset,
+    0 0 0 3px color-mix(in oklab, var(--color-primary) 18%, transparent) !important;
+}

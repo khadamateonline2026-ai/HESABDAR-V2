@@ -8,15 +8,18 @@ import { cn } from "@/lib/utils";
 
 export const Route = createFileRoute("/login")({ component: LoginPage });
 
+type Mode = "signin" | "signup" | "forgot";
+
 function LoginPage() {
   const { user, isPending } = useCurrentUserState();
-  const [mode, setMode] = useState<"signin" | "signup">("signin");
+  const [mode, setMode] = useState<Mode>("signin");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [confirm, setConfirm] = useState("");
   const [showPass, setShowPass] = useState(false);
   const [showConfirm, setShowConfirm] = useState(false);
   const [error, setError] = useState("");
+  const [info, setInfo] = useState("");
   const [busy, setBusy] = useState(false);
 
   if (isPending) {
@@ -28,13 +31,46 @@ function LoginPage() {
   }
   if (user) return <Navigate to="/" />;
 
+  function switchMode(next: Mode) {
+    setMode(next);
+    setError("");
+    setInfo("");
+    setPassword("");
+    setConfirm("");
+  }
+
   async function onSubmit(e: React.FormEvent) {
     e.preventDefault();
     setError("");
+    setInfo("");
     if (!authEnabled) {
       setError("ورود فعلاً فعال نیست.");
       return;
     }
+
+    if (mode === "forgot") {
+      if (!email.includes("@")) {
+        setError("ایمیل معتبر وارد کنید.");
+        return;
+      }
+      setBusy(true);
+      try {
+        const { error: err } = await authClient.requestPasswordReset({
+          email: email.trim(),
+        });
+        if (err) throw new Error(err.message ?? "درخواست بازنشانی ناکام شد");
+        // Neutral whether or not the address exists (Better Auth also returns ok).
+        setInfo(
+          "اگر این ایمیل در سیستم باشد، لینک بازنشانی رمز برایتان ارسال می‌شود. صندوق ورودی و هرزنامه را بررسی کنید.",
+        );
+      } catch (err) {
+        setError(err instanceof Error ? err.message : "خطا در درخواست بازنشانی");
+      } finally {
+        setBusy(false);
+      }
+      return;
+    }
+
     if (mode === "signup" && password !== confirm) {
       setError("رمز عبور و تکرار آن یکسان نیست.");
       return;
@@ -85,31 +121,37 @@ function LoginPage() {
             <img src="/app-icon.png" alt="حسابدار" className="size-full object-contain" />
           </div>
           <h1 className="text-2xl font-semibold tracking-tight">حسابدار</h1>
-          <p className="mt-1 text-sm text-muted">دستیار محاسباتی شما - طراحی ساده و محاسبه دقیق</p>
+          <p className="mt-1 text-sm text-muted">
+            {mode === "forgot"
+              ? "بازنشانی رمز عبور"
+              : "دستیار محاسباتی شما - طراحی ساده و محاسبه دقیق"}
+          </p>
         </div>
 
-        <div className="mb-5 grid grid-cols-2 rounded-md border border-border bg-surface-2 p-1">
-          <button
-            type="button"
-            onClick={() => setMode("signin")}
-            className={cn(
-              "rounded-sm px-3 py-2 text-sm font-medium transition-colors",
-              mode === "signin" ? "bg-surface text-fg shadow-sm" : "text-muted",
-            )}
-          >
-            ورود
-          </button>
-          <button
-            type="button"
-            onClick={() => setMode("signup")}
-            className={cn(
-              "rounded-sm px-3 py-2 text-sm font-medium transition-colors",
-              mode === "signup" ? "bg-surface text-fg shadow-sm" : "text-muted",
-            )}
-          >
-            ثبت‌نام
-          </button>
-        </div>
+        {mode !== "forgot" ? (
+          <div className="mb-5 grid grid-cols-2 rounded-md border border-border bg-surface-2 p-1">
+            <button
+              type="button"
+              onClick={() => switchMode("signin")}
+              className={cn(
+                "rounded-sm px-3 py-2 text-sm font-medium transition-colors",
+                mode === "signin" ? "bg-surface text-fg shadow-sm" : "text-muted",
+              )}
+            >
+              ورود
+            </button>
+            <button
+              type="button"
+              onClick={() => switchMode("signup")}
+              className={cn(
+                "rounded-sm px-3 py-2 text-sm font-medium transition-colors",
+                mode === "signup" ? "bg-surface text-fg shadow-sm" : "text-muted",
+              )}
+            >
+              ثبت‌نام
+            </button>
+          </div>
+        ) : null}
 
         <form onSubmit={onSubmit} className="space-y-3">
           <Field label="ایمیل">
@@ -123,16 +165,32 @@ function LoginPage() {
               autoComplete="email"
             />
           </Field>
-          <Field label="رمز عبور">
-            <PasswordInput
-              value={password}
-              show={showPass}
-              onToggle={() => setShowPass((v) => !v)}
-              onChange={setPassword}
-              autoComplete={mode === "signup" ? "new-password" : "current-password"}
-              className="login-field"
-            />
-          </Field>
+
+          {mode !== "forgot" ? (
+            <Field label="رمز عبور">
+              <PasswordInput
+                value={password}
+                show={showPass}
+                onToggle={() => setShowPass((v) => !v)}
+                onChange={setPassword}
+                autoComplete={mode === "signup" ? "new-password" : "current-password"}
+                className="login-field"
+              />
+            </Field>
+          ) : null}
+
+          {mode === "signin" ? (
+            <div className="flex justify-end">
+              <button
+                type="button"
+                onClick={() => switchMode("forgot")}
+                className="text-sm text-primary hover:underline"
+              >
+                فراموشی رمز
+              </button>
+            </div>
+          ) : null}
+
           {mode === "signup" ? (
             <Field label="تکرار رمز عبور">
               <PasswordInput
@@ -147,42 +205,41 @@ function LoginPage() {
           ) : null}
 
           {error ? <p className="text-sm text-danger">{error}</p> : null}
-          <ButtonSubmit busy={busy} label={mode === "signup" ? "ثبت‌نام" : "ورود"} />
+          {info ? <p className="text-sm text-muted">{info}</p> : null}
+          <ButtonSubmit
+            busy={busy}
+            label={
+              mode === "forgot" ? "ارسال لینک بازنشانی" : mode === "signup" ? "ثبت‌نام" : "ورود"
+            }
+          />
         </form>
 
-        <div className="my-5 flex items-center gap-3 text-xs text-muted">
-          <span className="h-px flex-1 bg-border" />
-          یا
-          <span className="h-px flex-1 bg-border" />
-        </div>
-        <button
-          type="button"
-          onClick={() => void onGoogle()}
-          disabled={busy}
-          className="flex h-11 w-full items-center justify-center gap-2 rounded-sm border border-border bg-surface text-sm hover:bg-surface-2 disabled:opacity-55"
-        >
-          ورود با گوگل
-        </button>
+        {mode === "forgot" ? (
+          <button
+            type="button"
+            onClick={() => switchMode("signin")}
+            className="mt-4 w-full text-center text-sm text-muted hover:text-fg"
+          >
+            بازگشت به ورود
+          </button>
+        ) : (
+          <>
+            <div className="my-5 flex items-center gap-3 text-xs text-muted">
+              <span className="h-px flex-1 bg-border" />
+              یا
+              <span className="h-px flex-1 bg-border" />
+            </div>
+            <button
+              type="button"
+              onClick={() => void onGoogle()}
+              disabled={busy}
+              className="flex h-11 w-full items-center justify-center gap-2 rounded-sm border border-border bg-surface text-sm hover:bg-surface-2 disabled:opacity-55"
+            >
+              ورود با گوگل
+            </button>
+          </>
+        )}
       </div>
-      <style>{`
-        .login-sheet input.login-field,
-        .login-sheet input.login-field:-webkit-autofill,
-        .login-sheet input.login-field:-webkit-autofill:hover,
-        .login-sheet input.login-field:-webkit-autofill:focus {
-          color: var(--color-fg) !important;
-          -webkit-text-fill-color: var(--color-fg) !important;
-          caret-color: var(--color-fg);
-          background-color: #ffffff14 !important;
-          box-shadow: inset 0 0 0 1000px color-mix(in oklab, #ffffff 14%, var(--color-bg)) !important;
-        }
-        html.theme-light .login-sheet input.login-field,
-        html.theme-light .login-sheet input.login-field:-webkit-autofill,
-        html.theme-light .login-sheet input.login-field:-webkit-autofill:hover,
-        html.theme-light .login-sheet input.login-field:-webkit-autofill:focus {
-          background-color: #ffffff94 !important;
-          box-shadow: inset 0 0 0 1000px #ffffff94 !important;
-        }
-      `}</style>
     </main>
   );
 }
