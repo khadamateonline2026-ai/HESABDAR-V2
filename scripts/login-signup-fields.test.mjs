@@ -29,6 +29,16 @@ test("login-field autofill override uses webkit box-shadow and long transition",
   assert.match(styles, /:autofill/);
 });
 
+test("login fields have distinct bg + contrast border vs card in both themes", () => {
+  assert.match(styles, /--login-field-bg:\s*#2c1822/);
+  assert.match(styles, /--login-field-border:\s*#c9a3b2/);
+  assert.match(styles, /html\.theme-light \.login-sheet[\s\S]*?--login-field-bg:\s*#ffffff/);
+  assert.match(styles, /html\.theme-light \.login-sheet[\s\S]*?--login-field-border:\s*#6e4a58/);
+  assert.match(styles, /border:\s*1px solid var\(--login-field-border\)\s*!important/);
+  assert.match(styles, /border-color:\s*var\(--color-primary\)\s*!important/);
+  assert.match(styles, /0 0 0 3px var\(--login-field-ring\)/);
+});
+
 test("login tab exposes forgot-password link and requestPasswordReset", () => {
   assert.match(login, /فراموشی رمز/);
   assert.match(login, /requestPasswordReset/);

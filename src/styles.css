@@ -804,12 +804,20 @@ html.app-busy::after {
 
 
 
-/* Login / reset-password fields: identical bg in empty, filled, autofill, focus */
+/* Login / reset-password fields: distinct from card; identical in every state */
 .login-sheet {
-  --login-field-bg: color-mix(in oklab, #ffffff 14%, var(--color-bg));
+  /* Dark: solid lifted surface vs translucent glass card (#ffffff14) */
+  --login-field-bg: #2c1822;
+  /* ~3:1+ non-text contrast vs dark field/card (≈ #ffffff70 on #2c1822) */
+  --login-field-border: #c9a3b2;
+  --login-field-ring: color-mix(in oklab, var(--color-primary) 42%, transparent);
 }
 html.theme-light .login-sheet {
-  --login-field-bg: var(--color-surface);
+  /* Light: opaque white vs frosted card (#ffffff94) */
+  --login-field-bg: #ffffff;
+  /* >= 3:1 vs white / light card (≈ #6e4a58 on #fff) */
+  --login-field-border: #6e4a58;
+  --login-field-ring: color-mix(in oklab, var(--color-primary) 40%, transparent);
 }
 
 .login-sheet input.login-field,
@@ -827,17 +835,18 @@ html.theme-light .login-sheet {
   caret-color: var(--color-fg);
   background-color: var(--login-field-bg) !important;
   background-image: none !important;
+  border: 1px solid var(--login-field-border) !important;
   -webkit-box-shadow: 0 0 0 1000px var(--login-field-bg) inset !important;
   box-shadow: 0 0 0 1000px var(--login-field-bg) inset !important;
   transition: background-color 99999s ease-out 0s, background-image 99999s ease-out 0s;
 }
 
 .login-sheet input.login-field:focus {
-  border-color: var(--color-primary);
+  border-color: var(--color-primary) !important;
   -webkit-box-shadow:
     0 0 0 1000px var(--login-field-bg) inset,
-    0 0 0 3px color-mix(in oklab, var(--color-primary) 18%, transparent) !important;
+    0 0 0 3px var(--login-field-ring) !important;
   box-shadow:
     0 0 0 1000px var(--login-field-bg) inset,
-    0 0 0 3px color-mix(in oklab, var(--color-primary) 18%, transparent) !important;
+    0 0 0 3px var(--login-field-ring) !important;
 }
