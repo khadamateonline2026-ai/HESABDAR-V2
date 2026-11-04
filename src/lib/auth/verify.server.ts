@@ -20,7 +20,8 @@ export { authConfigured };
 
 if (databaseConfigured && !authConfigured) {
   console.error(
-    "[auth] DATABASE_URL is set but auth is disabled (VITE_AUTH_ENABLED=false) " +
+    "[auth] DATABASE_URL is set but auth is not configured " +
+      "(VITE_AUTH_ENABLED=false, or neither email/password nor Grok credentials) " +
       "— requireUserId() will reject every request (fail closed) rather than " +
       "share one dev user on a real database.",
   );
@@ -85,8 +86,9 @@ export async function requireUserId(bearerToken?: string): Promise<string> {
   if (!authConfigured && !gateIdentityEnabled()) {
     if (databaseConfigured) {
       throw new Error(
-        "Auth is disabled (VITE_AUTH_ENABLED=false) but DATABASE_URL is set — " +
-          "refusing to fall back to the shared dev user against a real database.",
+        "Auth is not configured (enable VITE_AUTH_ENABLED with email/password " +
+          "or Grok credentials) but DATABASE_URL is set — refusing to fall back " +
+          "to the shared dev user against a real database.",
       );
     }
     return DEV_USER_ID;
