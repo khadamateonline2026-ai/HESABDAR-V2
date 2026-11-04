@@ -84,7 +84,6 @@ const authFlags = computeAuthFlags({
   grokClientSecret,
   emailAndPasswordEnabled,
 });
-const authDisabled = authFlags.authDisabled;
 /** True when Grok broker OAuth may load (needs client id + secret). */
 export const grokOAuthConfigured = authFlags.grokOAuthConfigured;
 /**
