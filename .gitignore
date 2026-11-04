@@ -1,0 +1,43 @@
+# dependencies
+node_modules/
+.pnpm-store/
+
+# env / secrets
+.env
+.env.*
+!.env.example
+.project_id
+.github_repo
+
+# runtime / local data (never commit)
+.data/
+.data/**
+.vercel/
+.vercel/**
+attachments/*
+!attachments/.gitkeep
+
+# build
+dist/
+.output/
+.nitro/
+.tanstack/
+.wrangler/
+coverage/
+playwright-report/
+test-results/
+blob-report/
+
+# locks / caches
+.node_modules.lock
+*.log
+.DS_Store
+.turbo/
+
+# local grok sandbox artifacts
+.grok/preview.log
+.grok/*.tmp.png
+.grok/og-raw.png
+.grok/status/
+.grok/*.tmp
+.grok/og.png.tmp

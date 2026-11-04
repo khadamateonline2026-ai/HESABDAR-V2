@@ -1,0 +1,38 @@
+{
+  "url": "http://127.0.0.1:8081/",
+  "viewports": {
+    "desktop": {
+      "width": 1280,
+      "height": 800,
+      "status": 200,
+      "title": "HESABDAR",
+      "hasCanvas": false,
+      "bodyTextLen": 103,
+      "bodyTextHash": "867eb1acab9deb5fc03cc3b670b88f1666338ca5b7f6828bebcf4154038f866f",
+      "bodyTextPrefix": "حسابدار دستیار محاسباتی شما - طراحی ساده و محاسبه دقیق ورود ثبت‌",
+      "horizontalOverflow": false,
+      "consoleErrors": [],
+      "pageErrors": [],
+      "screenshot": "/workspace/screenshots/app-builder-built.png"
+    },
+    "mobile": {
+      "width": 390,
+      "height": 844,
+      "status": 200,
+      "title": "HESABDAR",
+      "hasCanvas": false,
+      "bodyTextLen": 103,
+      "bodyTextHash": "867eb1acab9deb5fc03cc3b670b88f1666338ca5b7f6828bebcf4154038f866f",
+      "bodyTextPrefix": "حسابدار دستیار محاسباتی شما - طراحی ساده و محاسبه دقیق ورود ثبت‌",
+      "horizontalOverflow": false,
+      "consoleErrors": [],
+      "pageErrors": [],
+      "screenshot": "/workspace/screenshots/app-builder-built-mobile.png"
+    }
+  },
+  "brandWarnings": [],
+  "authWarnings": [],
+  "verdictFile": "/workspace/screenshots/app-builder-built.json",
+  "divergesFromBaseline": false,
+  "baselineReasons": []
+}
