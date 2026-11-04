@@ -3,7 +3,7 @@ import { authMiddleware } from "@/lib/auth/middleware";
 import { formatMoney, nextInvoiceNo, num, text } from "@/lib/format";
 import type { InventoryData, ProductionStage, WorkOrder } from "@/lib/types";
 import { isLastStage } from "@/lib/types";
-import { loadInventoryState, requireWriteAny, sqlOf, assertUniqueItemName, getRoleCodes, wageForProduct } from "./helpers";
+import { loadInventoryState, requireWriteAny, sqlOf, assertUniqueItemName, getRoleCodes, wageForProduct, assertAccountantPin } from "./helpers";
 import { encodeUsageError, type UsageFocus } from "@/lib/usage-focus";
 
 async function snapshotWage(
@@ -747,7 +747,7 @@ export const resetWorkerMaterials = createServerFn({ method: "POST" })
     const sql = await sqlOf();
     await requireWriteAny(sql, context.userId, ["warehouses", "workers"]);
     const codes = await getRoleCodes(sql, context.userId);
-    if (codes.accountant !== data.code.trim()) throw new Error("کد نقش حسابدار نادرست است");
+    assertAccountantPin(codes, data.code);
     await sql`delete from work_deliveries where user_id = ${context.userId}`;
     await sql`delete from work_order_alloc where user_id = ${context.userId}`;
     await sql`delete from work_orders where user_id = ${context.userId}`;

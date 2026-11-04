@@ -4,15 +4,7 @@ import { convertAmount, num, text, todayIso } from "@/lib/format";
 import type { ExpenseCategory, RecurringCadence, RecurringDue, RecurringDueAnchor, RecurringExpense } from "@/lib/types";
 import { parseCadence, parseDueAnchor } from "@/lib/types";
 import type { Sql } from "@/lib/db";
-import {
-  docStatusOf,
-  getRoleCodes,
-  guard,
-  invoiceOf,
-  itemKindOf,
-  loadCatalogs,
-  sqlOf,
-} from "./helpers";
+import { docStatusOf, getRoleCodes, guard, invoiceOf, itemKindOf, loadCatalogs, sqlOf, assertAccountantPin } from "./helpers";
 
 async function settleExpenseAccount(
   sql: Sql,
@@ -334,7 +326,7 @@ export const resetExpenseHistory = createServerFn({ method: "POST" })
   .handler(async ({ context, data }) => {
     const { sql } = await guard(context.userId, "expenses");
     const codes = await getRoleCodes(sql, context.userId);
-    if (codes.accountant !== data.code.trim()) throw new Error("کد نقش حسابدار نادرست است");
+    assertAccountantPin(codes, data.code);
     await sql`delete from expenses where user_id = ${context.userId}`;
     await sql`
       delete from recurring_periods

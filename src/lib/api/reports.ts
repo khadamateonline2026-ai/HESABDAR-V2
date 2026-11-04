@@ -2,20 +2,7 @@ import { createServerFn } from "@tanstack/react-start";
 import { authMiddleware } from "@/lib/auth/middleware";
 import { num, text } from "@/lib/format";
 import { convertAmount } from "@/lib/format";
-import {
-  fxToBase,
-  getRoleCodes,
-  guard,
-  invoiceOf,
-  isFinalStatus,
-  itemKindLabel,
-  itemKindOf,
-  loadCatalogs,
-  loadInventoryState,
-  requireProfile,
-  sqlOf,
-  assertCashAvailable,
-} from "./helpers";
+import { fxToBase, getRoleCodes, guard, invoiceOf, isFinalStatus, itemKindLabel, itemKindOf, loadCatalogs, loadInventoryState, requireProfile, sqlOf, assertCashAvailable, assertAccountantPin } from "./helpers";
 import { loadRecurringDues } from "./ops";
 import type { Item, ModelSummary, PartyPayment, PartySummary, PurchaseLedgerRow, SaleLedgerRow } from "@/lib/types";
 import type { Sql } from "@/lib/db";
@@ -1262,7 +1249,7 @@ export const resetActivityLog = createServerFn({ method: "POST" })
   .handler(async ({ context, data }) => {
     const { sql } = await guard(context.userId, "reports");
     const codes = await getRoleCodes(sql, context.userId);
-    if (codes.accountant !== data.code.trim()) throw new Error("کد نقش حسابدار نادرست است");
+    assertAccountantPin(codes, data.code);
     await sql`delete from activity_log where user_id = ${context.userId}`;
     return { ok: true as const };
   });

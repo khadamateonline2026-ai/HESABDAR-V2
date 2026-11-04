@@ -4,7 +4,7 @@ import { createServerFn } from "@tanstack/react-start";
 import { authMiddleware } from "@/lib/auth/middleware";
 import { num, text } from "@/lib/format";
 import { type AppSettings, type ColorPreset, type Role } from "@/lib/types";
-import { dumpWorkspace, getRoleCodes, muteActivityLog, requireProfile, requireWrite, restoreWorkspace, rethrow, seedDefaults, sqlOf, unmuteActivityLog, WORKSPACE_TABLES } from "./helpers";
+import { dumpWorkspace, getRoleCodes, muteActivityLog, requireProfile, requireWrite, restoreWorkspace, rethrow, seedDefaults, sqlOf, unmuteActivityLog, WORKSPACE_TABLES, assertAccountantPin, assertRolePin } from "./helpers";
 
 export const saveAppearance = createServerFn({ method: "POST" })
   .middleware([authMiddleware])
@@ -127,7 +127,7 @@ export const updateStaffUser = createServerFn({ method: "POST" })
     const name = data.displayName.trim();
     if (!name) throw new Error("نام لازم است");
     const codes = await getRoleCodes(sql, context.userId);
-    if (codes[data.role] !== data.code.trim()) throw new Error("کد نقش نادرست است");
+    assertRolePin(codes, data.role, data.code);
     const row = await sql<{ is_owner: boolean }>`
       select is_owner from staff_users where id = ${data.id} and user_id = ${context.userId}
     `;
@@ -176,7 +176,7 @@ export const importWorkspace = createServerFn({ method: "POST" })
     const sql = await sqlOf();
     await requireWrite(sql, context.userId, "settings");
     const codes = await getRoleCodes(sql, context.userId);
-    if (codes.accountant !== data.code.trim()) throw new Error("کد نقش حسابدار نادرست است");
+    assertAccountantPin(codes, data.code);
     await restoreWorkspace(sql, context.userId, data.payload);
     return { ok: true as const };
   });
@@ -223,7 +223,7 @@ export const restoreOnlineBackup = createServerFn({ method: "POST" })
     const sql = await sqlOf();
     await requireWrite(sql, context.userId, "settings");
     const codes = await getRoleCodes(sql, context.userId);
-    if (codes.accountant !== data.code.trim()) throw new Error("کد نقش حسابدار نادرست است");
+    assertAccountantPin(codes, data.code);
     const rows = await sql<{ payload: string }>`
       select payload from data_backups where id = ${data.id} and user_id = ${context.userId}
     `;
@@ -290,7 +290,7 @@ export const restoreCloudBackup = createServerFn({ method: "POST" })
     const sql = await sqlOf();
     await requireWrite(sql, context.userId, "settings");
     const codes = await getRoleCodes(sql, context.userId);
-    if (codes.accountant !== data.code.trim()) throw new Error("کد نقش حسابدار نادرست است");
+    assertAccountantPin(codes, data.code);
     const rows = await sql<{ payload: string }>`
       select payload from cloud_backups where id = ${data.id} and user_id = ${context.userId}
     `;
@@ -306,7 +306,7 @@ export const deleteCloudBackup = createServerFn({ method: "POST" })
     const sql = await sqlOf();
     await requireWrite(sql, context.userId, "settings");
     const codes = await getRoleCodes(sql, context.userId);
-    if (codes.accountant !== data.code.trim()) throw new Error("کد نقش حسابدار نادرست است");
+    assertAccountantPin(codes, data.code);
     await sql`delete from cloud_backups where id = ${data.id} and user_id = ${context.userId}`;
     return { ok: true as const };
   });
@@ -320,7 +320,7 @@ export const resetWorkspaceData = createServerFn({ method: "POST" })
     const sql = await sqlOf();
     await requireWrite(sql, context.userId, "settings");
     const codes = await getRoleCodes(sql, context.userId);
-    if (codes.accountant !== data.code.trim()) throw new Error("کد نقش حسابدار نادرست است");
+    assertAccountantPin(codes, data.code);
     await muteActivityLog(sql, context.userId);
     try {
       for (const name of [...WORKSPACE_TABLES].reverse()) {

@@ -2,6 +2,7 @@ import { getSql, withTransaction, type Sql } from "@/lib/db";
 import { convertAmount, num, text } from "@/lib/format";
 import { canWrite, writeError, type Area } from "@/lib/permissions";
 import { peekSessionRole } from "@/lib/session-role-slot";
+import { verifyPin } from "@/lib/auth/pin-hash";
 import {
   DEFAULT_SETTINGS,
   ITEM_KIND_LABEL,
@@ -488,6 +489,21 @@ export async function getRoleCodes(sql: Sql, userId: string): Promise<Record<Rol
   const settings = await loadSettings(sql, userId);
   return settings.roleCodes;
 }
+
+export function assertRolePin(
+  codes: Record<Role, string>,
+  role: Role,
+  code: string,
+  message = "کد نقش نادرست است",
+): void {
+  if (!verifyPin(code.trim(), codes[role] ?? "")) throw new Error(message);
+}
+
+/** Accountant PIN gate used by destructive/settings toggles (e.g. production module). */
+export function assertAccountantPin(codes: Record<Role, string>, code: string): void {
+  assertRolePin(codes, "accountant", code, "کد نقش حسابدار نادرست است");
+}
+
 
 export async function seedDefaults(sql: Sql, userId: string): Promise<void> {
   await sql`

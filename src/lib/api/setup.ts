@@ -2,7 +2,7 @@ import { createServerFn } from "@tanstack/react-start";
 import { authMiddleware } from "@/lib/auth/middleware";
 import { num, text } from "@/lib/format";
 import type { Sql } from "@/lib/db";
-import { guard, requireWriteAny, rethrow, sqlOf, assertUniqueItemName, syncSalariedWorker, getRoleCodes } from "./helpers";
+import { guard, requireWriteAny, rethrow, sqlOf, assertUniqueItemName, syncSalariedWorker, getRoleCodes, assertAccountantPin } from "./helpers";
 
 const WAGE_OVERHEAD_TITLE = "نرخ دستمزد";
 const WAGE_OVERHEAD_PREFIX = "نرخ دستمزد — ";
@@ -528,7 +528,7 @@ export const saveProductionEnabled = createServerFn({ method: "POST" })
     const sql = await sqlOf();
     await requireWriteAny(sql, context.userId, ["settings"]);
     const codes = await getRoleCodes(sql, context.userId);
-    if (codes.accountant !== data.code.trim()) throw new Error("کد نقش حسابدار نادرست است");
+    assertAccountantPin(codes, data.code);
     await sql.query(
       "alter table app_settings add column if not exists production_enabled boolean not null default true",
     );

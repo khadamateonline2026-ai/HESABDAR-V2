@@ -3,7 +3,7 @@ import { authMiddleware } from "@/lib/auth/middleware";
 import { formatMoney, nextInvoiceNo, num, text, todayIso } from "@/lib/format";
 import type { Party, WorkerDeliveryLine, WorkerLedger, WorkerModelAgg, WorkerPayment } from "@/lib/types";
 import { planDeliveryQtyChange, type PlanDelivery, type PlanOrder } from "@/lib/worker-delivery-plan";
-import { assertCashAvailable, getRoleCodes, guard, loadInventoryState, mapParty, sqlOf, wageForProduct } from "./helpers";
+import { assertCashAvailable, getRoleCodes, guard, loadInventoryState, mapParty, sqlOf, wageForProduct, assertAccountantPin } from "./helpers";
 import { loadRecurringDues } from "./ops";
 
 export const getWorkerLedger = createServerFn({ method: "GET" })
@@ -593,7 +593,7 @@ export const resetWorkerAccounts = createServerFn({ method: "POST" })
   .handler(async ({ context, data }) => {
     const { sql } = await guard(context.userId, "workers");
     const codes = await getRoleCodes(sql, context.userId);
-    if (codes.accountant !== data.code.trim()) throw new Error("کد نقش حسابدار نادرست است");
+    assertAccountantPin(codes, data.code);
     const wanted = [...new Set(data.workerIds.filter((id) => Number.isFinite(id) && id > 0))];
     if (!wanted.length) throw new Error("کارگر را انتخاب کنید");
     const valid: number[] = [];
