@@ -83,6 +83,13 @@ export const getBootstrap = createServerFn({ method: "GET" })
     };
   });
 
+/** Clears the httpOnly role cookie so the next login must pick name+role again. */
+export const clearSessionRole = createServerFn({ method: "POST" }).handler(async () => {
+  const { clearRoleCookie } = await import("@/lib/auth/session-role.server");
+  await clearRoleCookie();
+  return { ok: true as const };
+});
+
 export const completeOnboarding = createServerFn({ method: "POST" })
   .middleware([authMiddleware])
   .validator(

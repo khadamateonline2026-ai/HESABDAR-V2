@@ -1,5 +1,5 @@
 import { createFileRoute, Navigate } from "@tanstack/react-router";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Eye, EyeOff } from "lucide-react";
 import { authClient, authEnabled, signIn } from "@/lib/auth/client";
 import { useCurrentUserState } from "@/lib/auth/use-current-user";
@@ -21,6 +21,11 @@ function LoginPage() {
   const [error, setError] = useState("");
   const [info, setInfo] = useState("");
   const [busy, setBusy] = useState(false);
+
+  // Drop any prior role cookie when visiting login so RoleGate opens after sign-in.
+  useEffect(() => {
+    void clearRoleSession();
+  }, []);
 
   if (isPending) {
     return (
@@ -92,7 +97,7 @@ function LoginPage() {
         const { error: err } = await authClient.signIn.email({ email, password });
         if (err) throw new Error(err.message ?? "ورود ناکام شد");
       }
-      clearRoleSession();
+      await clearRoleSession();
       window.location.href = "/";
     } catch (err) {
       setError(err instanceof Error ? err.message : "خطا در ورود");
@@ -105,6 +110,7 @@ function LoginPage() {
     setError("");
     setBusy(true);
     try {
+      await clearRoleSession();
       await signIn("grok-google", { callbackURL: "/" });
     } catch (err) {
       setError(err instanceof Error ? err.message : "ورود با گوگل ناکام شد");

@@ -2,18 +2,24 @@ import { useState } from "react";
 import { Modal } from "@/components/ui/modal";
 import { Button } from "@/components/ui/button";
 import { Field, Input } from "@/components/ui/input";
-import { changeRole, completeOnboarding, applyRoleReset, requestRoleReset } from "@/lib/api/core";
+import { changeRole, clearSessionRole, completeOnboarding, applyRoleReset, requestRoleReset } from "@/lib/api/core";
 import { signOut } from "@/lib/auth/client";
 import { queryClient } from "@/lib/query-client";
 import { clearRoleToken, setRoleToken } from "@/lib/session-role-client";
 import { ROLE_LABELS, type Role, type StaffUser } from "@/lib/types";
 
-export function clearRoleSession() {
+/** Clears client + httpOnly role cookie so RoleGate opens on the next login. */
+export async function clearRoleSession() {
   clearRoleToken();
+  try {
+    await clearSessionRole();
+  } catch {
+    /* network / preview — client clear still ran */
+  }
 }
 
 export async function logoutNow() {
-  clearRoleSession();
+  await clearRoleSession();
   await signOut("/login");
 }
 
@@ -125,7 +131,7 @@ export function RoleGateModal({
   return (
     <Modal open={open} title="نقش کاربری" onClose={() => undefined} hideClose>
       <form onSubmit={submit} className="space-y-3">
-        <p className="text-sm text-muted">فقط پس از ورود به حساب، اسم، نقش و کد را یک‌بار وارد کنید.</p>
+        <p className="text-sm text-muted">پس از هر ورود، اسم، نقش و کد نقش را وارد کنید.</p>
         <Field label="اسم">
           <Input
             value={name}
