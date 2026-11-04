@@ -61,5 +61,11 @@ export async function sendResetPasswordEmail(
     throw new Error(`ارسال ایمیل ناکام شد${detail ? `: ${detail.slice(0, 200)}` : ""}`);
   }
 
+  const payload = (await res.json().catch(() => null)) as { id?: string } | null;
+  console.info("[password-reset] Resend accepted", {
+    id: payload?.id ?? null,
+    to: user.email,
+  });
+
   recordPasswordResetRequest(user.email);
 }
