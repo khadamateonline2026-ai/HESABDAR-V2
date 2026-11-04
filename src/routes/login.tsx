@@ -141,6 +141,7 @@ function LoginPage() {
                 onToggle={() => setShowConfirm((v) => !v)}
                 onChange={setConfirm}
                 autoComplete="new-password"
+                className="login-field"
               />
             </Field>
           ) : null}
@@ -211,20 +212,20 @@ function PasswordInput({
   className?: string;
 }) {
   return (
-    <div className="relative">
+    <div className="relative" dir="ltr">
       <input
         type={show ? "text" : "password"}
         required
         dir="ltr"
         value={value}
         onChange={(e) => onChange(e.target.value)}
-        className={cn("field-input pe-11", className)}
+        className={cn("field-input login-field pe-11", className)}
         autoComplete={autoComplete}
       />
       <button
         type="button"
         onClick={onToggle}
-        className="absolute inset-y-0 right-0 grid w-11 place-items-center text-muted"
+        className="absolute inset-y-0 end-0 grid w-11 place-items-center text-muted"
         aria-label={show ? "پنهان" : "نمایش"}
       >
         {show ? <EyeOff className="size-4" /> : <Eye className="size-4" />}

@@ -4,6 +4,7 @@ import { authMiddleware } from "@/lib/auth/middleware";
 import { withTransaction } from "@/lib/db";
 import { DEFAULT_SETTINGS, type Role } from "@/lib/types";
 import { assertPinShape, hashPin, verifyPin } from "@/lib/auth/pin-hash";
+import { resolveOnboardingIdentity } from "@/lib/auth/onboarding-identity";
 import {
   assertRoleNotLocked,
   recordRoleFail,
@@ -86,7 +87,9 @@ export const completeOnboarding = createServerFn({ method: "POST" })
   .middleware([authMiddleware])
   .validator(
     (d: {
-      companyName: string;
+      displayName?: string;
+      /** @deprecated alias for displayName (older clients) */
+      companyName?: string;
       companyEmail: string;
       supervisor: string;
       accountant: string;
@@ -94,12 +97,14 @@ export const completeOnboarding = createServerFn({ method: "POST" })
     }) => d,
   )
   .handler(async ({ context, data }) => {
-    const companyName = data.companyName.trim();
+    const { displayName, companyName } = resolveOnboardingIdentity({
+      displayName: data.displayName,
+      companyName: data.companyName,
+    });
     const companyEmail = data.companyEmail.trim();
     const supervisor = data.supervisor.trim();
     const accountant = data.accountant.trim();
     const seller = data.seller.trim();
-    if (!companyName) throw new Error("نام شرکت لازم است");
     if (!companyEmail.includes("@")) throw new Error("ایمیل شرکت لازم است");
     assertPinShape(supervisor);
     assertPinShape(accountant);
@@ -114,7 +119,7 @@ export const completeOnboarding = createServerFn({ method: "POST" })
       await withTransaction(async (tx) => {
         await tx`
           insert into profiles (user_id, display_name, role)
-          values (${context.userId}, ${companyName}, ${"accountant"})
+          values (${context.userId}, ${displayName}, ${"accountant"})
         `;
         await seedDefaults(tx, context.userId);
         await tx`
@@ -136,14 +141,14 @@ export const completeOnboarding = createServerFn({ method: "POST" })
         `;
         await tx`
           insert into staff_users (user_id, display_name, role, is_owner)
-          values (${context.userId}, ${companyName}, ${"accountant"}, ${true})
+          values (${context.userId}, ${displayName}, ${"accountant"}, ${true})
         `;
       });
     } catch (e) {
       rethrow(e);
     }
     const { signRoleToken, setRoleCookie } = await import("@/lib/auth/session-role.server");
-    const roleToken = signRoleToken(context.userId, "accountant", companyName);
+    const roleToken = signRoleToken(context.userId, "accountant", displayName);
     await setRoleCookie(roleToken);
     return { ok: true as const, roleToken };
   });

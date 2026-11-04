@@ -22,7 +22,7 @@ function suggestCode() {
 }
 
 export function OnboardingModal({ open }: { open: boolean; userId: string }) {
-  const [companyName, setCompanyName] = useState("");
+  const [displayName, setDisplayName] = useState("");
   const [companyEmail, setCompanyEmail] = useState("");
   const [supervisor, setSupervisor] = useState(suggestCode);
   const [accountant, setAccountant] = useState(suggestCode);
@@ -36,7 +36,7 @@ export function OnboardingModal({ open }: { open: boolean; userId: string }) {
     setError("");
     try {
       const res = await completeOnboarding({
-        data: { companyName, companyEmail, supervisor, accountant, seller },
+        data: { displayName, companyEmail, supervisor, accountant, seller },
       });
       if (res.roleToken) setRoleToken(res.roleToken);
       await queryClient.invalidateQueries({ queryKey: ["bootstrap"] });
@@ -48,11 +48,16 @@ export function OnboardingModal({ open }: { open: boolean; userId: string }) {
   }
 
   return (
-    <Modal open={open} title="تنظیم شرکت" onClose={() => undefined} hideClose>
+    <Modal open={open} title="تنظیم نقش" onClose={() => undefined} hideClose>
       <form onSubmit={submit} className="space-y-3">
         <p className="text-sm text-muted">برای هر نقش یک رمز انتخاب کنید. پیشنهاد برنامه را می‌توانید عوض کنید.</p>
-        <Field label="نام شرکت">
-          <Input value={companyName} onChange={(e) => setCompanyName(e.target.value)} required />
+        <Field label="نام">
+          <Input
+            value={displayName}
+            onChange={(e) => setDisplayName(e.target.value)}
+            placeholder="نام کسی که این نقش‌ها را مدیریت می‌کند"
+            required
+          />
         </Field>
         <Field label="ایمیل شرکت">
           <Input dir="ltr" type="email" value={companyEmail} onChange={(e) => setCompanyEmail(e.target.value)} required />
