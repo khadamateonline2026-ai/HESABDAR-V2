@@ -1,6 +1,7 @@
 import { getSql, withTransaction, type Sql } from "@/lib/db";
 import { convertAmount, num, text } from "@/lib/format";
 import { canManageRoleCodes, canWrite, writeError, type Area } from "@/lib/permissions";
+import { isWarehouseBackupPayload } from "@/lib/warehouse-backup";
 import { peekSessionRole } from "@/lib/session-role-slot";
 import { verifyPin } from "@/lib/auth/pin-hash";
 import {
@@ -662,6 +663,9 @@ export async function restoreWorkspace(sql: Sql, userId: string, payload: string
     parsed = JSON.parse(payload) as typeof parsed;
   } catch {
     throw new Error("فایل پشتیبان معتبر نیست");
+  }
+  if (isWarehouseBackupPayload(parsed)) {
+    throw new Error("این فایل بک‌آپ گدام است؛ از صفحه گدام‌ها → بک آپ → آپلود وارد کنید");
   }
   if (!parsed.tables || typeof parsed.tables !== "object" || Array.isArray(parsed.tables)) {
     throw new Error("فایل پشتیبان معتبر نیست");

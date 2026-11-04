@@ -31,6 +31,14 @@ import { queryClient } from "@/lib/query-client";
 import type { BomLine, ItemCategory, ItemOverhead, StockCard, WorkOrder } from "@/lib/types";
 import { clearUsageFocus, onUsageFocus, peekUsageFocus } from "@/lib/usage-focus";
 import { WarehouseNames, shopWarehouseCards } from "@/shop/warehouse-names";
+import {
+  asBackupNumber as asNumber,
+  asBackupText as asText,
+  parseWarehouseBackup,
+  type WarehouseBackupBom as BackupBom,
+  type WarehouseBackupItem as BackupItem,
+  type WarehouseBackupSection as BackupSection,
+} from "@/lib/warehouse-backup";
 
 export const Route = createFileRoute("/_app/warehouses")({ component: Page });
 
@@ -337,32 +345,6 @@ function Warehouses() {
   );
 }
 
-type BackupSection = "product" | "raw";
-
-type BackupBom = { name: string; quantity: number; unit: string; purchasePrice: number };
-
-type BackupItem = {
-  name: string;
-  category: string;
-  unit: string;
-  minQty: number;
-  salePrice: number;
-  purchasePrice: number;
-  qty: number;
-  notes: string;
-  bom?: BackupBom[];
-  overheads?: { title: string; amount: number }[];
-};
-
-function asNumber(value: unknown) {
-  const n = typeof value === "number" ? value : typeof value === "string" ? Number(value.replace(/,/g, "")) : NaN;
-  return Number.isFinite(n) ? n : 0;
-}
-
-function asText(value: unknown) {
-  return typeof value === "string" ? value.trim() : "";
-}
-
 function WarehouseBackup({
   section,
   cards,
@@ -387,7 +369,9 @@ function WarehouseBackup({
     const raws = items.filter((item) => item.kind === "raw");
     const payload = {
       app: "hesabdar",
+      type: "hesabdar-warehouse",
       section,
+      warehouse: section,
       items: cards.map((card) => {
         const notes = items.find((item) => item.id === card.itemId)?.notes ?? "";
         const row: BackupItem = {
@@ -427,17 +411,8 @@ function WarehouseBackup({
 
   async function importFile(file: File) {
     const text = await file.text();
-    const parsed = (() => {
-      try {
-        return JSON.parse(text) as { section?: unknown; items?: unknown };
-      } catch {
-        throw new Error("فایل معتبر نیست");
-      }
-    })();
-    if (parsed.section !== section || !Array.isArray(parsed.items)) {
-      throw new Error("این فایل مربوط همین گدام نیست");
-    }
-    const rows = parsed.items as BackupItem[];
+    const parsed = parseWarehouseBackup(text, section);
+    const rows = parsed.items;
     const catalogs = data?.catalogs;
     const categories = [...(catalogs?.itemCategories ?? [])];
     const units = [...(catalogs?.units ?? [])];
