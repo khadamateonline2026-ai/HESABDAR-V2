@@ -23,25 +23,11 @@ export type Area =
   | "dashboard";
 
 const SELLER_WRITE: Area[] = ["workers", "purchase", "sales", "expenses", "payments", "warehouses"];
-const SELLER_VIEW: Area[] = [
-  "dashboard",
-  "parties",
-  "workers",
-  "wages",
-  "jobs",
-  "purchase",
-  "sales",
-  "expenses",
-  "payments",
-  "warehouses",
-  "notes",
-  "reports",
-];
 
-export function canView(role: Role | null | undefined, area: Area): boolean {
+/** Match original: any authenticated role may view every app area. */
+export function canView(role: Role | null | undefined, _area: Area): boolean {
   if (!role) return false;
-  if (role === "accountant" || role === "supervisor") return true;
-  return SELLER_VIEW.includes(area);
+  return true;
 }
 
 export function canWrite(role: Role | null | undefined, area: Area): boolean {
@@ -49,6 +35,20 @@ export function canWrite(role: Role | null | undefined, area: Area): boolean {
   if (role === "supervisor") return false;
   if (role === "accountant") return true;
   return SELLER_WRITE.includes(area);
+}
+
+/**
+ * Role-code (PIN) settings tab: seller never sees it.
+ * Supervisor may view the section (values are never sent in plain — hashes blanked client-side).
+ * Accountant may view and manage.
+ */
+export function canViewRoleCodes(role: Role | null | undefined): boolean {
+  return role === "accountant" || role === "supervisor";
+}
+
+/** Only accountant may set / change role PIN hashes. */
+export function canManageRoleCodes(role: Role | null | undefined): boolean {
+  return role === "accountant";
 }
 
 export function writeError(role: Role): string {

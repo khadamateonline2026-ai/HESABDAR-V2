@@ -29,7 +29,7 @@ import {
   updateStaffUser,
 } from "@/lib/api/workspace";
 import { saveProductionEnabled } from "@/lib/api/setup";
-import { canWrite } from "@/lib/permissions";
+import { canManageRoleCodes, canViewRoleCodes, canWrite } from "@/lib/permissions";
 import { applyAppearance, ensureThemeContrast, paintTraderban } from "@/lib/prefs";
 import { queryClient } from "@/lib/query-client";
 import { DEFAULT_SETTINGS, ROLE_LABELS, type AppSettings, type ColorPreset, type Role, type StaffUser } from "@/lib/types";
@@ -112,7 +112,10 @@ function Page() {
 
 function Settings() {
   const { data } = useAppData();
-  const writable = canWrite(data?.profile?.role, "settings");
+  const role = data?.profile?.role;
+  const writable = canWrite(role, "settings");
+  const viewCodes = canViewRoleCodes(role);
+  const manageCodes = canManageRoleCodes(role);
   const saved = data?.settings ?? DEFAULT_SETTINGS;
   const showLogout = typeof window !== "undefined" ? !hasGateSessionMarker() : true;
 
@@ -132,7 +135,13 @@ function Settings() {
       <ProductionCard saved={saved} writable={writable} />
       <CalendarCard saved={saved} writable={writable} />
       <BackupCard />
-      <SecurityCard writable={writable} staff={data?.staff ?? []} settings={saved} />
+      <SecurityCard
+        writable={writable}
+        viewCodes={viewCodes}
+        manageCodes={manageCodes}
+        staff={data?.staff ?? []}
+        settings={saved}
+      />
       {showLogout ? (
         <Button variant="danger" onClick={() => { void logoutNow(); }}>
           خروج از حساب
@@ -661,10 +670,14 @@ function BackupCard() {
 
 function SecurityCard({
   writable,
+  viewCodes,
+  manageCodes,
   staff,
   settings,
 }: {
   writable: boolean;
+  viewCodes: boolean;
+  manageCodes: boolean;
   staff: StaffUser[];
   settings: AppSettings;
 }) {
@@ -688,7 +701,7 @@ function SecurityCard({
           ] as const
         )
           .filter(([id]) => {
-            if (id === "codes") return writable;
+            if (id === "codes") return viewCodes;
             if (id === "reset") return writable;
             return true;
           })
@@ -736,28 +749,53 @@ function SecurityCard({
           </ul>
         </div>
       ) : null}
-      {tab === "codes" && writable ? (
+      {tab === "codes" && viewCodes ? (
         <div className="space-y-3">
+          <p className="text-xs text-muted leading-relaxed">
+            کدهای نقش به‌صورت هش ذخیره می‌شوند و هرگز به‌صورت خوانا نمایش داده نمی‌شوند. برای تغییر، کد جدید را وارد کنید.
+          </p>
           <div className="grid grid-cols-3 gap-2">
             <Field label={ROLE_LABELS.supervisor}>
-              <Input dir="ltr" value={codes.supervisor} onChange={(e) => setCodes((c) => ({ ...c, supervisor: e.target.value }))} />
+              <Input
+                dir="ltr"
+                value={codes.supervisor}
+                disabled={!manageCodes}
+                placeholder={manageCodes ? "" : "••••"}
+                onChange={(e) => setCodes((c) => ({ ...c, supervisor: e.target.value }))}
+              />
             </Field>
             <Field label={ROLE_LABELS.accountant}>
-              <Input dir="ltr" value={codes.accountant} onChange={(e) => setCodes((c) => ({ ...c, accountant: e.target.value }))} />
+              <Input
+                dir="ltr"
+                value={codes.accountant}
+                disabled={!manageCodes}
+                placeholder={manageCodes ? "" : "••••"}
+                onChange={(e) => setCodes((c) => ({ ...c, accountant: e.target.value }))}
+              />
             </Field>
             <Field label={ROLE_LABELS.seller}>
-              <Input dir="ltr" value={codes.seller} onChange={(e) => setCodes((c) => ({ ...c, seller: e.target.value }))} />
+              <Input
+                dir="ltr"
+                value={codes.seller}
+                disabled={!manageCodes}
+                placeholder={manageCodes ? "" : "••••"}
+                onChange={(e) => setCodes((c) => ({ ...c, seller: e.target.value }))}
+              />
             </Field>
           </div>
-          <Button
-            onClick={async () => {
-              await saveRoleCodes({ data: codes });
-              await queryClient.invalidateQueries({ queryKey: ["bootstrap"] });
-              toast.success("کدها ذخیره شد");
-            }}
-          >
-            ثبت کدها
-          </Button>
+          {manageCodes ? (
+            <Button
+              onClick={async () => {
+                await saveRoleCodes({ data: codes });
+                await queryClient.invalidateQueries({ queryKey: ["bootstrap"] });
+                toast.success("کدها ذخیره شد");
+              }}
+            >
+              ثبت کدها
+            </Button>
+          ) : (
+            <p className="text-xs text-muted">فقط حسابدار می‌تواند کد نقش را تغییر دهد.</p>
+          )}
         </div>
       ) : null}
       {tab === "me" ? <NameRoleQuick /> : null}

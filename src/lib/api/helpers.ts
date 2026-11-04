@@ -1,6 +1,6 @@
 import { getSql, withTransaction, type Sql } from "@/lib/db";
 import { convertAmount, num, text } from "@/lib/format";
-import { canWrite, writeError, type Area } from "@/lib/permissions";
+import { canManageRoleCodes, canWrite, writeError, type Area } from "@/lib/permissions";
 import { peekSessionRole } from "@/lib/session-role-slot";
 import { verifyPin } from "@/lib/auth/pin-hash";
 import {
@@ -68,6 +68,17 @@ export async function requireWrite(sql: Sql, userId: string, area: Area): Promis
   if (!peekSessionRole()) throw new Error("نقش این نشست انتخاب نشده است");
   const active = sessionRoleState(p).profile;
   if (!canWrite(active.role, area)) throw new Error(writeError(active.role));
+  return active;
+}
+
+export async function requireManageRoleCodes(sql: Sql, userId: string): Promise<Profile> {
+  const p = await getProfileRow(sql, userId);
+  if (!p) throw new Error("نخست نام و نقش خود را ثبت کنید");
+  if (!peekSessionRole()) throw new Error("نقش این نشست انتخاب نشده است");
+  const active = sessionRoleState(p).profile;
+  if (!canManageRoleCodes(active.role)) {
+    throw new Error("فقط حسابدار می‌تواند کد نقش را مدیریت کند");
+  }
   return active;
 }
 

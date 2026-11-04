@@ -4,7 +4,7 @@ import { createServerFn } from "@tanstack/react-start";
 import { authMiddleware } from "@/lib/auth/middleware";
 import { num, text } from "@/lib/format";
 import { type AppSettings, type ColorPreset, type Role } from "@/lib/types";
-import { dumpWorkspace, getRoleCodes, muteActivityLog, requireProfile, requireWrite, restoreWorkspace, rethrow, seedDefaults, sqlOf, unmuteActivityLog, WORKSPACE_TABLES, assertAccountantPin, assertRolePin } from "./helpers";
+import { dumpWorkspace, getRoleCodes, muteActivityLog, requireManageRoleCodes, requireProfile, requireWrite, restoreWorkspace, rethrow, seedDefaults, sqlOf, unmuteActivityLog, WORKSPACE_TABLES, assertAccountantPin, assertRolePin } from "./helpers";
 
 export const saveAppearance = createServerFn({ method: "POST" })
   .middleware([authMiddleware])
@@ -67,7 +67,7 @@ export const saveRoleCodes = createServerFn({ method: "POST" })
   .validator((d: { supervisor: string; accountant: string; seller: string }) => d)
   .handler(async ({ context, data }) => {
     const sql = await sqlOf();
-    await requireWrite(sql, context.userId, "settings");
+    await requireManageRoleCodes(sql, context.userId);
     const supervisor = data.supervisor.trim();
     const accountant = data.accountant.trim();
     const seller = data.seller.trim();
