@@ -1,0 +1,87 @@
+name: DB Backup
+
+on:
+  schedule:
+    # 02:00 Asia/Kabul (UTC+4:30) = 21:30 UTC previous calendar day
+    - cron: "30 21 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: write
+
+jobs:
+  backup:
+    name: Encrypt & store Neon dump
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Check required secrets
+        id: gate
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          BACKUP_PASSPHRASE: ${{ secrets.BACKUP_PASSPHRASE }}
+        run: |
+          set -euo pipefail
+          missing=()
+          if [ -z "${DATABASE_URL:-}" ]; then
+            missing+=("DATABASE_URL")
+          fi
+          if [ -z "${BACKUP_PASSPHRASE:-}" ]; then
+            missing+=("BACKUP_PASSPHRASE")
+          fi
+          if [ "${#missing[@]}" -gt 0 ]; then
+            echo "::notice::DB backup skipped — missing GitHub secrets: ${missing[*]}. Add them under Settings → Secrets and variables → Actions, then re-run."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Install PostgreSQL 16 client
+        if: steps.gate.outputs.skip != 'true'
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq postgresql-common
+          # Official PGDG repo for pg_dump matching Neon (PG 16/17)
+          sudo /usr/share/postgresql-common/pgdg/apt.postgresql.org.sh -y
+          sudo apt-get install -y -qq postgresql-client-16
+          psql --version
+          pg_dump --version
+
+      - name: Dump, encrypt, and stage artifact
+        if: steps.gate.outputs.skip != 'true'
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          BACKUP_PASSPHRASE: ${{ secrets.BACKUP_PASSPHRASE }}
+        run: |
+          set -euo pipefail
+          stamp="$(date -u +%Y%m%dT%H%M%SZ)"
+          mkdir -p backup-out
+          dump="backup-out/hesabdar-${stamp}.dump"
+          enc="${dump}.gpg"
+          echo "Running pg_dump (custom format -Fc)…"
+          pg_dump -Fc --no-owner --no-acl "$DATABASE_URL" -f "$dump"
+          ls -lh "$dump"
+          echo "Encrypting with gpg (symmetric AES256)…"
+          gpg --batch --yes --pinentry-mode loopback \
+            --passphrase "$BACKUP_PASSPHRASE" \
+            --symmetric --cipher-algo AES256 \
+            -o "$enc" "$dump"
+          shred -u "$dump" || rm -f "$dump"
+          ls -lh "$enc"
+          echo "ARTIFACT_NAME=hesabdar-db-${stamp}" >> "$GITHUB_ENV"
+          echo "ARTIFACT_PATH=$enc" >> "$GITHUB_ENV"
+
+      - name: Upload encrypted backup artifact
+        if: steps.gate.outputs.skip != 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.ARTIFACT_NAME }}
+          path: ${{ env.ARTIFACT_PATH }}
+          retention-days: 30
+          if-no-files-found: error
+
+      - name: Done (skipped)
+        if: steps.gate.outputs.skip == 'true'
+        run: echo "Backup job finished without dumping — secrets not configured yet."

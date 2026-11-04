@@ -80,3 +80,42 @@ npm run dev
 - توکن نقش با انقضای ۱۲ ساعته + کوکی httpOnly
 - `.gitignore` کامل برای `.data` / `.vercel` / attachments
 - ارتقای `better-auth` و جایگزینی `xlsx` با `exceljs`
+
+## بکاپ خودکار دیتابیس (GitHub Actions + Neon)
+
+هر شب حدود **۰۲:۰۰ به وقت کابل** (و همچنین با اجرای دستی) workflow به نام `DB Backup` یک `pg_dump` رمزگذاری‌شده از Postgres می‌گیرد و تا ۳۰ روز به‌صورت Artifact نگه می‌دارد.
+
+### راه‌اندازی یک‌باره
+
+در GitHub → Settings → Secrets and variables → Actions این دو سکرت را بگذارید:
+
+| Secret | مقدار |
+|---|---|
+| `DATABASE_URL` | همان Connection string نئون (ترجیحاً نقش فقط‌خواندنی برای بکاپ) |
+| `BACKUP_PASSPHRASE` | یک عبارت عبور بلند و تصادفی برای رمز gpg |
+
+اگر سکرت‌ها نباشند، workflow با پیام واضح **رد می‌شود و fail نمی‌شود**.
+
+فایل workflow: `.github/workflows/db-backup.yml`
+
+### بازیابی از بکاپ (فارسی)
+
+1. در تب **Actions** → workflow **DB Backup** → آخرین اجرای موفق → بخش Artifacts را باز کنید و فایل `hesabdar-….dump.gpg` را دانلود کنید.
+2. روی کامپیوتر خودتان رمزگشایی کنید:
+
+```bash
+gpg --batch --yes --pinentry-mode loopback \
+  --passphrase 'YOUR_BACKUP_PASSPHRASE' \
+  --decrypt -o hesabdar.dump hesabdar-YYYYMMDD.dump.gpg
+```
+
+3. به یک دیتابیس خالی Neon / Postgres بازیابی کنید:
+
+```bash
+pg_restore --no-owner --no-acl -d "$DATABASE_URL" hesabdar.dump
+```
+
+4. فایل‌های `.dump` و عبارت عبور را امن نگه دارید؛ Artifactها فقط ۳۰ روز می‌مانند.
+
+> توجه: `pg_restore` روی دیتابیس در حال استفاده ممکن است تداخل ایجاد کند. برای بازیابی کامل معمولاً دیتابیس خالی یا شاخهٔ جدید Neon بسازید.
+

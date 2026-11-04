@@ -21,6 +21,7 @@
 | `migrations/` | SQL شماره‌دار |
 | `public/sw.js` | Service Worker PWA |
 | `.env.example` | فهرست envهای لازم |
+| `.github/workflows/db-backup.yml` | بکاپ روزانه Neon (gpg + artifact) |
 
 ## قراردادها
 
