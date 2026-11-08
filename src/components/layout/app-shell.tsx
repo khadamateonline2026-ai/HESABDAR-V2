@@ -68,6 +68,10 @@ const GROUPS: NavGroup[] = [
   },
 ];
 
+/** Glass look for purchase/sales/payments/workers/reports (revert: set false or git revert). */
+const GLASS_SECTIONS = true;
+const GLASS_SECTION_RE = /^\/(purchase|sales|payments|workers|reports)(\/|$)/;
+
 function groupLabelForPath(pathname: string): string {
   for (const group of GROUPS) {
     if (group.items.some((item) => pathname === item.to || pathname.startsWith(`${item.to}/`))) return group.label;
@@ -329,7 +333,7 @@ export function AppShell() {
         ) : null}
       </aside>
 
-      <main className="stage mx-auto w-full max-w-6xl px-4 pb-28 pt-2 sm:px-8">
+      <main className={cn("stage mx-auto w-full max-w-6xl px-4 pb-28 pt-2 sm:px-8", GLASS_SECTIONS && GLASS_SECTION_RE.test(pathname) && "glass-sections")}>
         {bootstrap.isPending ? (
           <div className="h-40 animate-pulse rounded-md bg-border/60" />
         ) : (

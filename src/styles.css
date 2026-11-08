@@ -976,3 +976,70 @@ html.theme-light .wh-glass-list article.list-row:nth-of-type(even) {
   align-self: auto;
 }
 .wh-glass-list article.list-row.low-stock > .flex > .grid { padding-left: calc(1.35rem + 0.6rem) !important; }
+
+/* ── .glass-sections: same glass as .wh-glass-list cards (toggle GLASS_SECTIONS in app-shell) ── */
+.glass-sections .dash-card,
+.glass-sections .tb-card,
+.glass-sections .dash-card.list-card,
+.glass-sections .bg-surface,
+.glass-sections .bg-surface-2,
+.glass-sections .shadow-panel,
+.glass-sections [class*="dash-tint-"] {
+  background: rgba(255, 255, 255, 0.07) !important;
+  border: 1px solid rgba(255, 255, 255, 0.16) !important;
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.08) !important;
+  -webkit-backdrop-filter: blur(24px) saturate(1.4);
+  backdrop-filter: blur(24px) saturate(1.4);
+}
+html.theme-light .glass-sections .dash-card,
+html.theme-light .glass-sections .tb-card,
+html.theme-light .glass-sections .dash-card.list-card,
+html.theme-light .glass-sections .bg-surface,
+html.theme-light .glass-sections .bg-surface-2,
+html.theme-light .glass-sections .shadow-panel,
+html.theme-light .glass-sections [class*="dash-tint-"] {
+  background: rgba(255, 255, 255, 0.4) !important;
+  border: 1px solid rgba(255, 255, 255, 0.75) !important;
+  box-shadow: 0 2px 10px rgba(20, 8, 26, 0.05) !important;
+}
+/* nested glass inside a glass panel: no second layer */
+.glass-sections .dash-card .bg-surface,
+.glass-sections .dash-card .bg-surface-2,
+.glass-sections .tb-card .bg-surface,
+.glass-sections .tb-card .bg-surface-2 {
+  background: transparent !important;
+  box-shadow: none !important;
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+}
+/* tables / lists: no solid, zebra or header fills */
+.glass-sections table,
+.glass-sections thead,
+.glass-sections tbody,
+.glass-sections tr,
+.glass-sections th,
+.glass-sections td,
+.glass-sections .list-head,
+.glass-sections .list-row,
+.glass-sections .list-card thead th,
+.glass-sections .list-card .list-head,
+.glass-sections .list-card tbody tr:nth-child(odd) td,
+.glass-sections .list-card tbody tr:nth-child(even) td,
+.glass-sections .list-card .list-rows > .list-row,
+.glass-sections .list-card article.list-row,
+.glass-sections .bg-bg-warm\/40,
+.glass-sections .bg-border\/60 {
+  background: transparent !important;
+  box-shadow: none !important;
+}
+.glass-sections td,
+.glass-sections .list-row { border-color: rgba(255, 255, 255, 0.12) !important; }
+html.theme-light .glass-sections td,
+html.theme-light .glass-sections .list-row { border-color: rgba(20, 8, 26, 0.08) !important; }
+.glass-sections .dash-card .dash-card.list-card,
+html.theme-light .glass-sections .dash-card .dash-card.list-card {
+  background: transparent !important;
+  box-shadow: none !important;
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+}
