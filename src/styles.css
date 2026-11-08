@@ -898,3 +898,15 @@ html.theme-light .wh-glass-list article.list-row { background: #ffffff59 !import
   margin-bottom: 2px;
 }
 .wh-glass-list .low-stock-flag { border-radius: 5px !important; }
+/* wh-glass-list: no outer panel — each row is its own glass card */
+.dash-card.list-card.wh-glass-list,
+html.theme-light .dash-card.list-card.wh-glass-list {
+  background: transparent !important;
+  border: 0 !important;
+  box-shadow: none !important;
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+  overflow: visible;
+}
+.wh-glass-list > .border-b { border-bottom: 0 !important; padding-inline: 0 !important; }
+.wh-glass-list article.list-row { margin: 0 0 8px !important; box-shadow: 0 8px 20px #00000040; }
