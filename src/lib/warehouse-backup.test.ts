@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import {
   isWarehouseBackupPayload,
   parseWarehouseBackup,
@@ -79,7 +79,9 @@ test("workspace dump is not a warehouse backup", () => {
   assert.equal(isWarehouseBackupPayload({ tables: { items: [] } }), false);
 });
 
-test("real user attachment files parse (legacy)", () => {
+// Local-only fixtures (real user files are not committed); skipped in CI.
+const REAL_FIXTURES = existsSync("/workspace/backup-import-debug/file-a.json") && existsSync("/workspace/backup-import-debug/file-b.json");
+test("real user attachment files parse (legacy)", { skip: !REAL_FIXTURES }, () => {
   const a = readFileSync("/workspace/backup-import-debug/file-a.json", "utf8");
   const b = readFileSync("/workspace/backup-import-debug/file-b.json", "utf8");
   const product = parseWarehouseBackup(a, "product");
