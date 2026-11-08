@@ -1043,3 +1043,28 @@ html.theme-light .glass-sections .dash-card .dash-card.list-card {
   -webkit-backdrop-filter: none;
   backdrop-filter: none;
 }
+
+/* ── reports: full-width report tabs + heading bars (revert this commit to undo) ── */
+.reports-area .reports-tabs {
+  display: grid !important;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+.reports-area .reports-tabs > a { justify-content: center; padding-inline: 0.5rem; }
+.reports-area h2.mb-3 {
+  display: block;
+  width: 100%;
+  text-align: right;
+  direction: rtl;
+  padding: 0.6rem 0.9rem;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.07);
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.08);
+  -webkit-backdrop-filter: blur(24px) saturate(1.4);
+  backdrop-filter: blur(24px) saturate(1.4);
+}
+html.theme-light .reports-area h2.mb-3 {
+  background: rgba(255, 255, 255, 0.4);
+  border-color: rgba(255, 255, 255, 0.75);
+  box-shadow: 0 2px 10px rgba(20, 8, 26, 0.05);
+}

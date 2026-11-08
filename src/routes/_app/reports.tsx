@@ -22,9 +22,9 @@ function Page() {
 function ReportsLayout() {
   const pathname = useRouterState({ select: (s) => s.location.pathname });
   return (
-    <div>
+    <div className="reports-area">
       <h1 className="mb-4 text-xl font-semibold">گزارش‌ها</h1>
-      <div className="no-print mb-5 flex flex-wrap gap-2">
+      <div className="reports-tabs no-print mb-5 flex flex-wrap gap-2">
         {TABS.map((tab) => {
           const active = pathname === tab.to;
           return (
