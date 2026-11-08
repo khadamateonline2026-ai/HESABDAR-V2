@@ -2,7 +2,7 @@ import { useState } from "react";
 import { Modal } from "@/components/ui/modal";
 import { Button } from "@/components/ui/button";
 import { Field, Input } from "@/components/ui/input";
-import { changeRole, clearSessionRole, completeOnboarding, applyRoleReset, requestRoleReset } from "@/lib/api/core";
+import { changeRole, clearSessionRole, completeOnboarding, requestRoleReset } from "@/lib/api/core";
 import { signOut } from "@/lib/auth/client";
 import { queryClient } from "@/lib/query-client";
 import { clearRoleToken, setRoleToken } from "@/lib/session-role-client";
@@ -105,10 +105,6 @@ export function RoleGateModal({
   const [busy, setBusy] = useState(false);
   const [forgot, setForgot] = useState(false);
   const [sentTo, setSentTo] = useState("");
-  const [emailCode, setEmailCode] = useState("");
-  const [supervisor, setSupervisor] = useState("");
-  const [accountant, setAccountant] = useState("");
-  const [seller, setSeller] = useState("");
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
@@ -175,48 +171,23 @@ export function RoleGateModal({
             setBusy(true);
             setError("");
             try {
-              if (!sentTo) {
-                const res = await requestRoleReset();
-                setSentTo(res.email);
-              } else {
-                await applyRoleReset({ data: { emailCode, supervisor, accountant, seller } });
-                setForgot(false);
-                setSentTo("");
-                setEmailCode("");
-                setCode("");
-                setError("");
-              }
+              const res = await requestRoleReset();
+              setSentTo(res.email);
             } catch (err) {
-              setError(err instanceof Error ? err.message : "بازنشانی ناکام شد");
+              setError(err instanceof Error ? err.message : "ارسال لینک ناکام شد");
             } finally {
               setBusy(false);
             }
           }}
         >
           {sentTo ? (
-            <>
-              <p className="text-sm text-muted">کد به {sentTo} فرستاده شد. رمز ورود عوض نمی‌شود.</p>
-              <Field label="کد ایمیل">
-                <Input dir="ltr" value={emailCode} onChange={(e) => setEmailCode(e.target.value)} required />
-              </Field>
-              <Field label={ROLE_LABELS.accountant}>
-                <Input dir="ltr" value={accountant} onChange={(e) => setAccountant(e.target.value)} required />
-              </Field>
-              <Field label={ROLE_LABELS.seller}>
-                <Input dir="ltr" value={seller} onChange={(e) => setSeller(e.target.value)} required />
-              </Field>
-              <Field label={ROLE_LABELS.supervisor}>
-                <Input dir="ltr" value={supervisor} onChange={(e) => setSupervisor(e.target.value)} required />
-              </Field>
-              <Button type="submit" disabled={busy} className="w-full">
-                {busy ? "…" : "ثبت رمزهای جدید"}
-              </Button>
-            </>
-          ) : (
-            <Button type="submit" disabled={busy} className="w-full" variant="secondary">
-              {busy ? "…" : "فرستادن کد به ایمیل شرکت"}
-            </Button>
-          )}
+            <p className="text-sm text-muted">
+              لینک یک‌بارمصرف به {sentTo} فرستاده شد (۳۰ دقیقه معتبر). با باز کردن آن، کد جدید نقش را تعیین کنید.
+            </p>
+          ) : null}
+          <Button type="submit" disabled={busy} className="w-full" variant="secondary">
+            {busy ? "…" : sentTo ? "فرستادن دوباره لینک" : "فرستادن لینک بازنشانی به ایمیل حساب"}
+          </Button>
         </form>
       ) : null}
     </Modal>

@@ -12,6 +12,7 @@ import { Route as rootRouteImport } from './routes/__root'
 import { Route as AppRouteImport } from './routes/_app'
 import { Route as LoginRouteImport } from './routes/login'
 import { Route as ResetPasswordRouteImport } from './routes/reset-password'
+import { Route as ResetRolePinRouteImport } from './routes/reset-role-pin'
 import { Route as AppIndexRouteImport } from './routes/_app/index'
 import { Route as AppExpensesRouteImport } from './routes/_app/expenses'
 import { Route as AppNotesRouteImport } from './routes/_app/notes'
@@ -52,6 +53,11 @@ const LoginRoute = LoginRouteImport.update({
 const ResetPasswordRoute = ResetPasswordRouteImport.update({
   id: '/reset-password',
   path: '/reset-password',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ResetRolePinRoute = ResetRolePinRouteImport.update({
+  id: '/reset-role-pin',
+  path: '/reset-role-pin',
   getParentRoute: () => rootRouteImport,
 } as any)
 const AppIndexRoute = AppIndexRouteImport.update({
@@ -194,6 +200,7 @@ export interface FileRoutesByFullPath {
   '/': typeof AppIndexRoute
   '/login': typeof LoginRoute
   '/reset-password': typeof ResetPasswordRoute
+  '/reset-role-pin': typeof ResetRolePinRoute
   '/expenses': typeof AppExpensesRoute
   '/notes': typeof AppNotesRoute
   '/payments': typeof AppPaymentsRoute
@@ -224,6 +231,7 @@ export interface FileRoutesByFullPath {
 export interface FileRoutesByTo {
   '/login': typeof LoginRoute
   '/reset-password': typeof ResetPasswordRoute
+  '/reset-role-pin': typeof ResetRolePinRoute
   '/expenses': typeof AppExpensesRoute
   '/notes': typeof AppNotesRoute
   '/payments': typeof AppPaymentsRoute
@@ -256,6 +264,7 @@ export interface FileRoutesById {
   '/_app': typeof AppRouteWithChildren
   '/login': typeof LoginRoute
   '/reset-password': typeof ResetPasswordRoute
+  '/reset-role-pin': typeof ResetRolePinRoute
   '/_app/expenses': typeof AppExpensesRoute
   '/_app/notes': typeof AppNotesRoute
   '/_app/payments': typeof AppPaymentsRoute
@@ -290,6 +299,7 @@ export interface FileRouteTypes {
     | '/'
     | '/login'
     | '/reset-password'
+    | '/reset-role-pin'
     | '/expenses'
     | '/notes'
     | '/payments'
@@ -320,6 +330,7 @@ export interface FileRouteTypes {
   to:
     | '/login'
     | '/reset-password'
+    | '/reset-role-pin'
     | '/expenses'
     | '/notes'
     | '/payments'
@@ -351,6 +362,7 @@ export interface FileRouteTypes {
     | '/_app'
     | '/login'
     | '/reset-password'
+    | '/reset-role-pin'
     | '/_app/expenses'
     | '/_app/notes'
     | '/_app/payments'
@@ -384,6 +396,7 @@ export interface RootRouteChildren {
   AppRoute: typeof AppRouteWithChildren
   LoginRoute: typeof LoginRoute
   ResetPasswordRoute: typeof ResetPasswordRoute
+  ResetRolePinRoute: typeof ResetRolePinRoute
   ApiAuthSplatRoute: typeof ApiAuthSplatRoute
 }
 
@@ -408,6 +421,13 @@ declare module '@tanstack/react-router' {
       path: '/reset-password'
       fullPath: '/reset-password'
       preLoaderRoute: typeof ResetPasswordRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/reset-role-pin': {
+      id: '/reset-role-pin'
+      path: '/reset-role-pin'
+      fullPath: '/reset-role-pin'
+      preLoaderRoute: typeof ResetRolePinRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/_app/': {
@@ -676,8 +696,18 @@ const rootRouteChildren: RootRouteChildren = {
   AppRoute: AppRouteWithChildren,
   LoginRoute: LoginRoute,
   ResetPasswordRoute: ResetPasswordRoute,
+  ResetRolePinRoute: ResetRolePinRoute,
   ApiAuthSplatRoute: ApiAuthSplatRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)
   ._addFileTypes<FileRouteTypes>()
+
+import type { getRouter } from './router.tsx'
+import type { createStart } from '@tanstack/react-start'
+declare module '@tanstack/react-start' {
+  interface Register {
+    ssr: true
+    router: Awaited<ReturnType<typeof getRouter>>
+  }
+}

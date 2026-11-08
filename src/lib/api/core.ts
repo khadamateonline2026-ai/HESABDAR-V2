@@ -1,5 +1,5 @@
 import { createServerFn } from "@tanstack/react-start";
-import { createHash, randomInt } from "node:crypto";
+import { createHash, randomBytes, randomInt } from "node:crypto";
 import { authMiddleware } from "@/lib/auth/middleware";
 import { withTransaction } from "@/lib/db";
 import { DEFAULT_SETTINGS, type Role } from "@/lib/types";
@@ -268,7 +268,19 @@ async function ensureResetColumns(sql: Awaited<ReturnType<typeof sqlOf>>) {
   await sql.query("alter table app_settings add column if not exists role_codes_hashed boolean not null default false");
 }
 
-async function sendRoleCode(to: string, code: string): Promise<void> {
+const ROLE_RESET_TTL_MS = 30 * 60 * 1000;
+const ROLE_FA: Record<string, string> = { accountant: "حسابدار", seller: "فروشنده", supervisor: "ناظر" };
+
+function tokenHash(token: string): string {
+  return createHash("sha256").update(`role-reset:${token}`).digest("hex");
+}
+
+function publicAppUrl(): string {
+  const raw = process.env.APP_URL?.trim() || process.env.BETTER_AUTH_URL?.trim() || "http://localhost:8080";
+  return raw.replace(/\/+$/, "");
+}
+
+async function sendRoleResetLink(to: string, link: string): Promise<string | null> {
   const key = process.env.RESEND_API_KEY?.trim();
   const from = process.env.ROLE_MAIL_FROM?.trim() || process.env.EMAIL_FROM?.trim();
   if (!key || !from) throw new Error("ارسال ایمیل روی این سرور فعال نیست");
@@ -278,13 +290,34 @@ async function sendRoleCode(to: string, code: string): Promise<void> {
     body: JSON.stringify({
       from,
       to: [to],
-      subject: "کد بازنشانی رمز نقش",
-      text: `کد بازنشانی رمز نقش‌ها: ${code}\nاین کد فقط رمز نقش‌ها را عوض می‌کند، نه رمز ورود.\nتا ۱۵ دقیقه معتبر است.`,
+      subject: "بازنشانی کد نقش حسابدار",
+      text:
+        `برای تعیین کد جدید یک نقش روی لینک زیر بزنید (فقط یک بار و تا ۳۰ دقیقه معتبر است):\n\n${link}\n\n` +
+        `این لینک رمز ورود حساب را عوض نمی‌کند. اگر درخواست نداده‌اید، نادیده بگیرید.`,
+      html:
+        `<p dir="rtl">برای تعیین کد جدید یک نقش روی لینک زیر بزنید (فقط یک بار و تا ۳۰ دقیقه معتبر است):</p>` +
+        `<p><a href="${link}">${link}</a></p>` +
+        `<p dir="rtl">این لینک رمز ورود حساب را عوض نمی‌کند. اگر درخواست نداده‌اید، نادیده بگیرید.</p>`,
     }),
   });
   if (!res.ok) throw new Error("ارسال ایمیل ناکام شد");
+  const body = (await res.json().catch(() => ({}))) as { id?: string };
+  return body.id ?? null;
 }
 
+async function accountEmail(sql: Awaited<ReturnType<typeof sqlOf>>, userId: string): Promise<string> {
+  try {
+    const u = await sql<{ email: string | null }>`select email from "user" where id = ${userId} limit 1`;
+    const e = (u[0]?.email ?? "").trim();
+    if (e.includes("@")) return e;
+  } catch {
+    /* fall through to company email */
+  }
+  const companies = await sql<{ email: string | null }>`select email from companies where user_id = ${userId}`;
+  return (companies[0]?.email ?? "").trim();
+}
+
+/** Email a one-time, 30-minute link to the owner/accountant account email. */
 export const requestRoleReset = createServerFn({ method: "POST" })
   .middleware([authMiddleware])
   .handler(async ({ context }) => {
@@ -292,23 +325,21 @@ export const requestRoleReset = createServerFn({ method: "POST" })
     const sql = await sqlOf();
     const owner = await getProfileRow(sql, context.userId);
     if (!owner) throw new Error("نخست شرکت را تنظیم کنید");
-    const companies = await sql<{ email: string | null }>`
-      select email from companies where user_id = ${context.userId}
-    `;
-    const email = (companies[0]?.email ?? "").trim();
-    if (!email.includes("@")) throw new Error("ایمیل شرکت ثبت نشده است");
+    const email = await accountEmail(sql, context.userId);
+    if (!email.includes("@")) throw new Error("ایمیل حساب ثبت نشده است");
     await ensureResetColumns(sql);
-    const code = String(randomInt(100000, 1000000));
-    const exp = new Date(Date.now() + 15 * 60 * 1000).toISOString();
+    const token = randomBytes(32).toString("base64url");
+    const exp = new Date(Date.now() + ROLE_RESET_TTL_MS).toISOString();
     await sql`
       insert into app_settings (user_id, role_reset_hash, role_reset_exp)
-      values (${context.userId}, ${resetHash(context.userId, code)}, ${exp})
+      values (${context.userId}, ${tokenHash(token)}, ${exp})
       on conflict (user_id) do update set
         role_reset_hash = excluded.role_reset_hash,
         role_reset_exp = excluded.role_reset_exp
     `;
+    let emailId: string | null = null;
     try {
-      await sendRoleCode(email, code);
+      emailId = await sendRoleResetLink(email, `${publicAppUrl()}/reset-role-pin?token=${encodeURIComponent(token)}`);
     } catch (e) {
       await sql`
         update app_settings set role_reset_hash = null, role_reset_exp = null
@@ -316,7 +347,37 @@ export const requestRoleReset = createServerFn({ method: "POST" })
       `;
       throw e instanceof Error ? e : new Error("ارسال ایمیل ناکام شد");
     }
-    return { ok: true as const, email };
+    return { ok: true as const, email, emailId };
+  });
+
+/** Set a new hashed PIN for one role using the emailed one-time link (no session needed). */
+export const applyRoleResetLink = createServerFn({ method: "POST" })
+  .validator((d: { token: string; role: string; pin: string }) => d)
+  .handler(async ({ data }) => {
+    const token = (data.token ?? "").trim();
+    const pin = (data.pin ?? "").trim();
+    const role = data.role;
+    if (!token) throw new Error("لینک نامعتبر یا منقضی است");
+    if (role !== "accountant" && role !== "seller" && role !== "supervisor") throw new Error("نقش نامعتبر است");
+    if (!/^\d{4,}$/.test(pin)) throw new Error("کد نقش باید حداقل ۴ رقم باشد");
+    assertPinShape(pin);
+    const sql = await sqlOf();
+    await ensureResetColumns(sql);
+    const h = tokenHash(token);
+    const rows = await sql<{ user_id: string; role_reset_exp: string | null }>`
+      select user_id, role_reset_exp from app_settings where role_reset_hash = ${h} limit 1
+    `;
+    const row = rows[0];
+    const exp = row?.role_reset_exp ? new Date(row.role_reset_exp).getTime() : 0;
+    if (!row || exp < Date.now()) throw new Error("لینک نامعتبر یا منقضی است");
+    const hashed = hashPin(pin);
+    const col = `role_code_${role}`;
+    await sql.query(
+      `update app_settings set ${col} = $1, role_codes_hashed = true, role_reset_hash = null, role_reset_exp = null, role_fail_count = 0, role_lock_until = null where user_id = $2 and role_reset_hash = $3`,
+      [hashed, row.user_id, h],
+    );
+    recordRoleSuccess(row.user_id);
+    return { ok: true as const, role: ROLE_FA[role] };
   });
 
 export const applyRoleReset = createServerFn({ method: "POST" })
