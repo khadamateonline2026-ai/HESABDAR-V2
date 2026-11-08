@@ -910,3 +910,39 @@ html.theme-light .dash-card.list-card.wh-glass-list {
 }
 .wh-glass-list > .border-b { border-bottom: 0 !important; padding-inline: 0 !important; }
 .wh-glass-list article.list-row { margin: 0 0 8px !important; box-shadow: 0 8px 20px #00000040; }
+/* wh-glass-list: strip leftover table chrome; fixed portrait image column so names align */
+.wh-glass-list .overflow-x-auto,
+.wh-glass-list .min-w-\[44rem\],
+.wh-glass-list section,
+.wh-glass-list article.list-row > .flex,
+.wh-glass-list article.list-row > .flex > .grid {
+  background: transparent !important;
+  border: 0 !important;
+  box-shadow: none !important;
+}
+.wh-glass-list .border-b { border-bottom-width: 0 !important; }
+.wh-glass-list section > h2 { padding: 0.5rem 0.25rem 0.35rem !important; }
+.wh-glass-list > .border-b { padding: 0 0 0.6rem !important; }
+.wh-glass-list article.list-row {
+  position: relative;
+  min-height: 88px;
+  padding-inline-start: calc(10px + 56px + 12px);
+}
+.wh-glass-list article.list-row.low-stock { margin: 0 0 8px !important; }
+.wh-glass-list article.list-row > .flex > .grid { padding-inline: 0 0.5rem !important; }
+.wh-glass-list article.list-row > .flex > .grid > :nth-child(1) { position: static !important; }
+.wh-glass-list article.list-row > .flex > .grid > :nth-child(1) > .absolute {
+  top: 8px !important;
+  bottom: 8px !important;
+  inset-inline-start: 10px !important;
+  width: 56px;
+  align-items: stretch !important;
+}
+.wh-glass-list article.list-row > .flex > .grid > :nth-child(1) > .absolute > button {
+  width: 56px !important;
+  height: auto !important;
+  min-height: 72px;
+  border-radius: 10px !important;
+}
+.wh-glass-list article.list-row > .flex > .grid > :nth-child(1) > .absolute > button img { object-fit: cover; }
+.wh-glass-list .wh-name { padding-inline: 0 !important; }
