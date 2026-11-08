@@ -228,7 +228,7 @@ export function StockCardView({
                 }
               />
             </div>
-            <div className="truncate px-8 text-center text-sm font-semibold">{card.name}</div>
+            <div className="wh-name truncate px-8 text-center text-sm font-semibold">{card.name}</div>
           </div>
         ) : (
         <div className="relative min-w-0">
@@ -257,23 +257,23 @@ export function StockCardView({
               }
             />
           </div>
-          <h3 className="truncate px-8 text-center text-sm font-semibold">{card.name}</h3>
+          <h3 className="wh-name truncate px-8 text-center text-sm font-semibold">{card.name}</h3>
         </div>
         )}
-        <div className="min-w-0 truncate text-center text-2xs tabular-nums whitespace-nowrap">
+        <div data-label="موجودی" className="min-w-0 truncate text-center text-2xs tabular-nums whitespace-nowrap">
           {formatMoney(card.qty)}
           {card.unitName ? ` ${card.unitName}` : ""}
         </div>
-        <div className="min-w-0 text-center text-2xs">
+        <div data-label={costLabel} className="min-w-0 text-center text-2xs">
           <AfAmount value={card.unitCost} />
         </div>
-        <div className="min-w-0 text-center text-2xs">
+        <div data-label="قیمت فروش" className="min-w-0 text-center text-2xs">
           <AfAmount value={card.salePrice} />
         </div>
-        <div className="min-w-0 text-center text-2xs">
+        <div data-label="ارزش" className="min-w-0 text-center text-2xs">
           <AfAmount whole value={card.valueBase} />
         </div>
-        <div className="min-w-0 text-center text-2xs tabular-nums whitespace-nowrap">{formatMoney(card.minQty)}</div>
+        <div data-label="حداقل" className="min-w-0 text-center text-2xs tabular-nums whitespace-nowrap">{formatMoney(card.minQty)}</div>
         <div className={cn("flex items-center", aligned ? "justify-center" : "justify-end")} onClick={(e) => e.stopPropagation()}>
           {writable && onEdit ? <IconBtn kind="edit" onClick={onEdit} /> : null}
           {writable && onDelete ? <IconBtn kind="delete" onClick={onDelete} /> : null}
@@ -304,6 +304,9 @@ export function StockCardView({
   );
 }
 
+/** Glass two-line warehouse list (revert: set false or git revert this commit). */
+const WH_GLASS_LIST = true;
+
 const STOCK_COLS = "minmax(8rem,1.7fr) repeat(5,minmax(4.6rem,1fr)) 4.25rem";
 const STOCK_COLS_ALIGNED = "repeat(6, minmax(0, 1fr)) 4.25rem 1.35rem";
 
@@ -321,7 +324,7 @@ function StockSheet({
   children: ReactNode;
 }) {
   return (
-    <div className="dash-card list-card">
+    <div className={cn("dash-card list-card", WH_GLASS_LIST && "wh-glass-list")}>
       {toolbar ? <div className="border-b border-border px-2 pt-2">{toolbar}</div> : null}
       <div className="overflow-x-auto">
       <div className="min-w-[44rem]">
