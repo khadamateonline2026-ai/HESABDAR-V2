@@ -502,10 +502,12 @@ function WarehouseBackup({
           name,
           categoryId: await categoryId(asText(row.category), section),
           unitId: await unitId(asText(row.unit)),
-          minQty: Math.max(0, asNumber(row.minQty)),
-          salePrice: Math.max(0, asNumber(row.salePrice)),
-          purchasePrice: Math.max(0, asNumber(row.purchasePrice)),
-          notes: asText(row.notes),
+          // Fields missing from the file keep the item's current value (no wipe on re-import).
+          minQty: row.has && !row.has.minQty && existing ? existing.minQty : Math.max(0, asNumber(row.minQty)),
+          salePrice: row.has && !row.has.salePrice && existing ? existing.salePrice : Math.max(0, asNumber(row.salePrice)),
+          purchasePrice:
+            row.has && !row.has.purchasePrice && existing ? existing.purchasePrice : Math.max(0, asNumber(row.purchasePrice)),
+          notes: asText(row.notes) || existing?.notes || "",
           bom: bom,
           overheads:
             section === "product"

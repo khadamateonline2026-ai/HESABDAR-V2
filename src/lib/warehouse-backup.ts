@@ -21,7 +21,31 @@ export type WarehouseBackupItem = {
   kind?: WarehouseBackupSection;
   bom?: WarehouseBackupBom[];
   overheads?: { title: string; amount: number }[];
+  /** Which price/min fields were actually present in the file (absent → keep existing values on re-import). */
+  has?: { minQty: boolean; salePrice: boolean; purchasePrice: boolean };
 };
+
+/** Alternate key names seen in older exports / hand-edited files (English + Persian). */
+const MIN_KEYS = ["minQty", "min_qty", "minStock", "min_stock", "minimum", "min", "alertQty", "minAlert", "حداقل", "حداقل موجودی", "هشدار حداقل موجودی"];
+const SALE_KEYS = ["salePrice", "sale_price", "sellPrice", "sell_price", "price", "قیمت فروش", "فروش"];
+const BUY_KEYS = ["purchasePrice", "purchase_price", "buyPrice", "buy_price", "cost", "costPrice", "unitCost", "قیمت خرید", "خرید"];
+
+function pickNumber(row: Record<string, unknown>, keys: string[]): number | undefined {
+  const pools: Record<string, unknown>[] = [row];
+  for (const nest of ["prices", "price", "stock", "pricing"]) {
+    const v = row[nest];
+    if (v && typeof v === "object" && !Array.isArray(v)) pools.push(v as Record<string, unknown>);
+  }
+  for (const pool of pools) {
+    for (const k of keys) {
+      const v = pool[k];
+      if (v === undefined || v === null || v === "" || typeof v === "object") continue;
+      const n = asBackupNumber(typeof v === "string" ? v.replace(/[۰-۹]/g, (d) => String("۰۱۲۳۴۵۶۷۸۹".indexOf(d))) : v);
+      return Math.max(0, n);
+    }
+  }
+  return undefined;
+}
 
 export type ParsedWarehouseBackup = {
   section: WarehouseBackupSection;
@@ -93,7 +117,7 @@ function normalizeBom(raw: unknown): WarehouseBackupBom[] | undefined {
       name,
       quantity,
       unit: asBackupText(row.unit),
-      purchasePrice: Math.max(0, asBackupNumber(row.purchasePrice)),
+      purchasePrice: pickNumber(row, BUY_KEYS) ?? 0,
     });
   }
   return out;
@@ -119,14 +143,18 @@ function normalizeItem(raw: unknown): WarehouseBackupItem | null {
   const name = asBackupText(row.name);
   if (!name) return null;
   const kind = isSection(row.kind) ? row.kind : undefined;
+  const minQty = pickNumber(row, MIN_KEYS);
+  const salePrice = pickNumber(row, SALE_KEYS);
+  const purchasePrice = pickNumber(row, BUY_KEYS);
   return {
     name,
     category: asBackupText(row.category),
     unit: asBackupText(row.unit),
-    minQty: Math.max(0, asBackupNumber(row.minQty)),
-    salePrice: Math.max(0, asBackupNumber(row.salePrice)),
-    purchasePrice: Math.max(0, asBackupNumber(row.purchasePrice)),
-    qty: Math.max(0, asBackupNumber(row.qty)),
+    minQty: minQty ?? 0,
+    salePrice: salePrice ?? 0,
+    purchasePrice: purchasePrice ?? 0,
+    has: { minQty: minQty !== undefined, salePrice: salePrice !== undefined, purchasePrice: purchasePrice !== undefined },
+    qty: Math.max(0, asBackupNumber(row.qty ?? row.quantity ?? row["موجودی"])),
     notes: asBackupText(row.notes),
     kind,
     bom: normalizeBom(row.bom),
