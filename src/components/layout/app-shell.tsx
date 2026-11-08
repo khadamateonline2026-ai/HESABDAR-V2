@@ -70,7 +70,7 @@ const GROUPS: NavGroup[] = [
 
 /** Glass look for purchase/sales/payments/workers/reports (revert: set false or git revert). */
 const GLASS_SECTIONS = true;
-const GLASS_SECTION_RE = /^\/(purchase|sales|payments|workers|reports)(\/|$)/;
+const GLASS_SECTION_RE = /^\/(purchase|sales|payments|workers|reports|expenses)(\/|$)/;
 
 function groupLabelForPath(pathname: string): string {
   for (const group of GROUPS) {
