@@ -946,3 +946,33 @@ html.theme-light .dash-card.list-card.wh-glass-list {
 }
 .wh-glass-list article.list-row > .flex > .grid > :nth-child(1) > .absolute > button img { object-fit: cover; }
 .wh-glass-list .wh-name { padding-inline: 0 !important; }
+/* wh-glass-list: real glass (no dark drop band) + flush red edge strip for low stock */
+.wh-glass-list article.list-row,
+.wh-glass-list article.list-row:nth-of-type(odd),
+.wh-glass-list article.list-row:nth-of-type(even) {
+  background: rgba(255, 255, 255, 0.07) !important;
+  border: 1px solid rgba(255, 255, 255, 0.16) !important;
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.08) !important;
+  -webkit-backdrop-filter: blur(24px) saturate(1.4);
+  backdrop-filter: blur(24px) saturate(1.4);
+}
+html.theme-light .wh-glass-list article.list-row,
+html.theme-light .wh-glass-list article.list-row:nth-of-type(odd),
+html.theme-light .wh-glass-list article.list-row:nth-of-type(even) {
+  background: rgba(255, 255, 255, 0.4) !important;
+  border: 1px solid rgba(255, 255, 255, 0.75) !important;
+  box-shadow: 0 2px 10px rgba(20, 8, 26, 0.05) !important;
+}
+.wh-glass-list article.list-row.low-stock { border-radius: 14px !important; }
+.wh-glass-list article.list-row .low-stock-flag {
+  position: absolute !important;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  height: auto !important;
+  width: 1.35rem;
+  margin: 0 !important;
+  border-radius: 0 !important;
+  align-self: auto;
+}
+.wh-glass-list article.list-row.low-stock > .flex > .grid { padding-left: calc(1.35rem + 0.6rem) !important; }
