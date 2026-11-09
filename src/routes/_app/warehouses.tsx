@@ -396,7 +396,13 @@ function WarehouseBackup({
             amount: row.amount,
           }));
         }
-        return row;
+        return {
+          ...row,
+          kind: section,
+          bom: row.bom ?? [],
+          "حداقل موجودی": card.minQty,
+          ...(section === "raw" ? { "قیمت خرید": card.purchasePrice } : {}),
+        };
       }),
     };
     const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
