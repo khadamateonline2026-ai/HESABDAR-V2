@@ -1,3 +1,4 @@
+import { RESTORE_CONFIRM } from "@/lib/backup-validate";
 import { createFileRoute } from "@tanstack/react-router";
 import { useQuery } from "@tanstack/react-query";
 import { useEffect, useState, type ReactNode } from "react";
@@ -653,13 +654,13 @@ function BackupCard() {
       <ConfirmAccountantReset
         open={ask != null}
         title={ask?.mode === "file" ? "بازیابی از فایل" : "بازیابی پشتیبان"}
-        message="بازیابی، اطلاعات فعلی را با این پشتیبان جایگزین می‌کند. کد حسابدار را وارد کنید."
+        message="بازیابی، اطلاعات فعلی را با این پشتیبان جایگزین می‌کند. پیش از آن یک نسخه از اطلاعات فعلی خودکار در پشتیبان‌های آنلاین ذخیره می‌شود. کد حسابدار را وارد کنید."
         confirmLabel="بازیابی"
         onClose={() => setAsk(null)}
         onConfirm={async (code) => {
           if (!ask) return;
-          if (ask.mode === "file") await importWorkspace({ data: { payload: ask.payload, code } });
-          else await restoreOnlineBackup({ data: { id: ask.id, code } });
+          if (ask.mode === "file") await importWorkspace({ data: { payload: ask.payload, code, confirm: RESTORE_CONFIRM } });
+          else await restoreOnlineBackup({ data: { id: ask.id, code, confirm: RESTORE_CONFIRM } });
           await queryClient.invalidateQueries();
           toast.success(ask.mode === "file" ? "اطلاعات بازیابی شد" : "بازیابی شد");
         }}

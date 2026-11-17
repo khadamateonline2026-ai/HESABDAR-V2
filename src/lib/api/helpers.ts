@@ -2,6 +2,7 @@ import { getSql, withTransaction, type Sql } from "@/lib/db";
 import { convertAmount, num, text } from "@/lib/format";
 import { canManageRoleCodes, canWrite, writeError, type Area } from "@/lib/permissions";
 import { isWarehouseBackupPayload } from "@/lib/warehouse-backup";
+import { assertRestoreConfirmed, buildManifest, validateWorkspaceBackup, type ValidBackup } from "@/lib/backup-validate";
 import { peekSessionRole } from "@/lib/session-role-slot";
 import { verifyPin } from "@/lib/auth/pin-hash";
 import {
@@ -620,6 +621,8 @@ export async function dumpWorkspace(sql: Sql, userId: string) {
     version: 1 as const,
     exportedAt: new Date().toISOString(),
     profile: profile[0] ?? null,
+    // STR-02: row counts per table so a truncated/partial file is detected on restore.
+    manifest: buildManifest(tables),
     tables,
   };
 }
@@ -657,53 +660,122 @@ export async function logActivity(
   }
 }
 
-export async function restoreWorkspace(sql: Sql, userId: string, payload: string): Promise<void> {
-  let parsed: { tables?: Record<string, unknown>; profile?: { display_name?: string; role?: string } };
+export type RestoreOptions = {
+  /** Must be RESTORE_CONFIRM ("replace-all"): a restore replaces ALL workspace data. */
+  confirm?: string;
+  /** Label of the automatic safety snapshot taken before replacing data. */
+  snapshotLabel?: string;
+};
+
+/**
+ * STR-02 — full-workspace restore.
+ * 1. Requires an explicit full-replace confirmation.
+ * 2. Validates the WHOLE file (version, all tables, rows, manifest counts)
+ *    before anything is touched; an empty or partial file is refused.
+ * 3. In ONE transaction: saves an automatic snapshot of the current data to
+ *    `data_backups` (visible under online backups), deletes, re-inserts, and
+ *    moves id sequences past the restored ids. Any failure rolls back all of it.
+ */
+export async function restoreWorkspace(
+  sql: Sql,
+  userId: string,
+  payload: string,
+  opts: RestoreOptions = {},
+): Promise<{ snapshotId: number; rows: number }> {
+  assertRestoreConfirmed(opts.confirm);
+  let parsed: unknown;
   try {
-    parsed = JSON.parse(payload) as typeof parsed;
+    parsed = JSON.parse(payload);
   } catch {
     throw new Error("فایل پشتیبان معتبر نیست");
   }
-  if (isWarehouseBackupPayload(parsed)) {
+  if (isWarehouseBackupPayload(parsed as Record<string, unknown>)) {
     throw new Error("این فایل بک‌آپ گدام است؛ از صفحه گدام‌ها → بک آپ → آپلود وارد کنید");
   }
-  if (!parsed.tables || typeof parsed.tables !== "object" || Array.isArray(parsed.tables)) {
-    throw new Error("فایل پشتیبان معتبر نیست");
-  }
-  const tables = parsed.tables;
+  const backup = validateWorkspaceBackup(parsed, WORKSPACE_TABLES);
   await muteActivityLog(sql, userId);
   try {
-    await withTransaction(async (tx) => {
-      const allowed = await backupColumns(tx);
-      assertBackupRows(tables, allowed);
-      for (const name of [...WORKSPACE_TABLES].reverse()) {
-        await tx.query(`delete from ${name} where user_id = $1`, [userId]);
-      }
-      for (const name of restoreInsertOrder()) {
-        const rows = tables[name] ?? [];
-        const cols = allowed.get(name)!;
-        for (const row of rows as Record<string, unknown>[]) {
-          const copy: Record<string, unknown> = { ...row, user_id: userId };
-          const keys = Object.keys(copy).filter((key) => cols.has(key));
-          if (!keys.length) continue;
-          const list = keys.map((key) => `"${key}"`).join(", ");
-          const placeholders = keys.map((_, i) => `$${i + 1}`).join(", ");
-          await tx.query(
-            `insert into ${name} (${list}) values (${placeholders})`,
-            keys.map((key) => copy[key]),
-          );
-        }
-      }
-      if (parsed.profile?.display_name) {
-        const role = parsed.profile.role || "accountant";
-        await tx`
-          update profiles set display_name = ${text(parsed.profile.display_name)}, role = ${role}
-          where user_id = ${userId}
-        `;
-      }
-    });
+    return await withTransaction((tx) => restoreWorkspaceTx(tx, userId, backup, opts.snapshotLabel));
+  } catch (e) {
+    if (typeof e === "object" && e !== null && (e as { code?: string }).code === "23505") {
+      throw new Error(
+        "این پشتیبان شناسه‌هایی دارد که در این پایگاه داده برای حساب دیگری استفاده شده‌اند؛ بازیابی انجام نشد و هیچ داده‌ای تغییر نکرد",
+      );
+    }
+    throw e;
   } finally {
     await unmuteActivityLog(sql, userId);
+  }
+}
+
+/** The transactional part of a restore; `tx` must be a transaction. Exported for tests. */
+export async function restoreWorkspaceTx(
+  tx: Sql,
+  userId: string,
+  backup: ValidBackup,
+  snapshotLabel?: string,
+): Promise<{ snapshotId: number; rows: number }> {
+  const allowed = await backupColumns(tx);
+  assertBackupRows(backup.tables, allowed);
+  const before = await dumpWorkspace(tx, userId);
+  const label =
+    snapshotLabel || `خودکار پیش از بازیابی ${new Date().toISOString().slice(0, 16).replace("T", " ")}`;
+  const snap = await tx<{ id: number }>`
+    insert into data_backups (user_id, label, payload)
+    values (${userId}, ${label}, ${JSON.stringify(before)})
+    returning id
+  `;
+  for (const name of [...WORKSPACE_TABLES].reverse()) {
+    await tx.query(`delete from ${name} where user_id = $1`, [userId]);
+  }
+  let rows = 0;
+  for (const name of restoreInsertOrder()) {
+    const list = backup.tables[name] ?? [];
+    const cols = allowed.get(name)!;
+    for (const row of list) {
+      const copy: Record<string, unknown> = { ...row, user_id: userId };
+      const keys = Object.keys(copy).filter((key) => cols.has(key));
+      if (!keys.length) continue;
+      const columns = keys.map((key) => `"${key}"`).join(", ");
+      const placeholders = keys.map((_, i) => `$${i + 1}`).join(", ");
+      await tx.query(
+        `insert into ${name} (${columns}) values (${placeholders})`,
+        keys.map((key) => copy[key]),
+      );
+      rows += 1;
+    }
+  }
+  await advanceIdSequences(tx, allowed);
+  if (backup.profile?.display_name) {
+    const role = ["supervisor", "accountant", "seller"].includes(String(backup.profile.role))
+      ? String(backup.profile.role)
+      : "accountant";
+    await tx`
+      update profiles set display_name = ${text(backup.profile.display_name)}, role = ${role}
+      where user_id = ${userId}
+    `;
+  }
+  return { snapshotId: num(snap[0].id), rows };
+}
+
+/**
+ * Restored rows keep their original ids; move each serial sequence past the
+ * highest id so the next insert can't collide (needed when restoring into a
+ * fresh database). Never moves a sequence backwards.
+ */
+async function advanceIdSequences(tx: Sql, columns: Map<string, Set<string>>): Promise<void> {
+  for (const name of WORKSPACE_TABLES) {
+    if (!columns.get(name)?.has("id")) continue;
+    const seq = await tx.query<{ seq: string | null }>("select pg_get_serial_sequence($1, 'id') as seq", [name]);
+    const seqName = seq[0]?.seq;
+    if (!seqName) continue;
+    const max = await tx.query<{ m: number | string | null }>(`select max(id) as m from ${name}`);
+    const maxId = num(max[0]?.m);
+    if (maxId <= 0) continue;
+    await tx.query(
+      "select setval($1::regclass, greatest($2::bigint, (select last_value from pg_sequences where (schemaname || '.' || sequencename)::regclass = $1::regclass)), true)",
+      [seqName, maxId],
+    );
   }
 }
 

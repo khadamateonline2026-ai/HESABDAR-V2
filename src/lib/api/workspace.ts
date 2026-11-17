@@ -171,13 +171,13 @@ export const exportWorkspace = createServerFn({ method: "POST" })
 
 export const importWorkspace = createServerFn({ method: "POST" })
   .middleware([authMiddleware])
-  .validator((d: { payload: string; code: string }) => d)
+  .validator((d: { payload: string; code: string; confirm?: string }) => d)
   .handler(async ({ context, data }) => {
     const sql = await sqlOf();
     await requireWrite(sql, context.userId, "settings");
     const codes = await getRoleCodes(sql, context.userId);
     assertAccountantPin(codes, data.code);
-    await restoreWorkspace(sql, context.userId, data.payload);
+    await restoreWorkspace(sql, context.userId, data.payload, { confirm: data.confirm });
     return { ok: true as const };
   });
 
@@ -218,7 +218,7 @@ export const listOnlineBackups = createServerFn({ method: "GET" })
 
 export const restoreOnlineBackup = createServerFn({ method: "POST" })
   .middleware([authMiddleware])
-  .validator((d: { id: number; code: string }) => d)
+  .validator((d: { id: number; code: string; confirm?: string }) => d)
   .handler(async ({ context, data }) => {
     const sql = await sqlOf();
     await requireWrite(sql, context.userId, "settings");
@@ -228,7 +228,7 @@ export const restoreOnlineBackup = createServerFn({ method: "POST" })
       select payload from data_backups where id = ${data.id} and user_id = ${context.userId}
     `;
     if (!rows[0]) throw new Error("پشتیبان یافت نشد");
-    await restoreWorkspace(sql, context.userId, rows[0].payload);
+    await restoreWorkspace(sql, context.userId, rows[0].payload, { confirm: data.confirm });
     return { ok: true as const };
   });
 
@@ -285,7 +285,7 @@ export const listCloudBackups = createServerFn({ method: "GET" })
 
 export const restoreCloudBackup = createServerFn({ method: "POST" })
   .middleware([authMiddleware])
-  .validator((d: { id: number; code: string }) => d)
+  .validator((d: { id: number; code: string; confirm?: string }) => d)
   .handler(async ({ context, data }) => {
     const sql = await sqlOf();
     await requireWrite(sql, context.userId, "settings");
@@ -295,7 +295,7 @@ export const restoreCloudBackup = createServerFn({ method: "POST" })
       select payload from cloud_backups where id = ${data.id} and user_id = ${context.userId}
     `;
     if (!rows[0]) throw new Error("پشتیبان یافت نشد");
-    await restoreWorkspace(sql, context.userId, rows[0].payload);
+    await restoreWorkspace(sql, context.userId, rows[0].payload, { confirm: data.confirm });
     return { ok: true as const };
   });
 
