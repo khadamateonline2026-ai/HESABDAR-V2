@@ -2,6 +2,15 @@ import { createServerFn } from "@tanstack/react-start";
 import { authMiddleware } from "@/lib/auth/middleware";
 import { num, text } from "@/lib/format";
 import type { Sql } from "@/lib/db";
+import {
+  assertPartyDeletable,
+  isForeignKeyViolation,
+  isPartyKind,
+  partyArea,
+  storedParty,
+  storedPartyArea,
+  type PartyKind,
+} from "./party-history";
 import { guard, requireWriteAny, rethrow, sqlOf, assertUniqueItemName, syncSalariedWorker, getRoleCodes, assertAccountantPin } from "./helpers";
 
 const WAGE_OVERHEAD_TITLE = "نرخ دستمزد";
@@ -298,9 +307,19 @@ export const saveParty = createServerFn({ method: "POST" })
     }) => d,
   )
   .handler(async ({ context, data }) => {
-    const area =
-      data.kind === "worker" ? "workers" : data.kind === "customer" ? "sales" : data.kind === "vendor" ? "purchase" : "parties";
-    const { sql } = await guard(context.userId, area);
+    // SEC-07: an existing contact's permission comes from its STORED kind; the
+    // kind sent by the client is only trusted (and validated) for new contacts.
+    let kind: PartyKind;
+    if (data.id) {
+      const stored = await storedParty(await sqlOf(), context.userId, data.id);
+      if (!stored) throw new Error("طرف حساب یافت نشد");
+      kind = stored.kind;
+    } else {
+      if (!isPartyKind(data.kind)) throw new Error("نوع طرف حساب نامعتبر است");
+      kind = data.kind;
+    }
+    const { sql } = await guard(context.userId, partyArea(kind));
+    data = { ...data, kind };
     const name = data.name.trim();
     if (!name) throw new Error("نام لازم است");
     const stageId = data.kind === "worker" ? (data.stageId ?? null) : null;
@@ -336,10 +355,19 @@ export const deleteParty = createServerFn({ method: "POST" })
   .middleware([authMiddleware])
   .validator((d: { id: number; kind: "customer" | "vendor" | "worker" | "other" }) => d)
   .handler(async ({ context, data }) => {
-    const area =
-      data.kind === "worker" ? "workers" : data.kind === "customer" ? "sales" : data.kind === "vendor" ? "purchase" : "parties";
+    // SEC-07: permission from the stored kind (the client's `kind` is ignored),
+    // and a contact with financial history is never deleted.
+    const area = await storedPartyArea(await sqlOf(), context.userId, data.id);
     const { sql } = await guard(context.userId, area);
-    await sql`delete from parties where id = ${data.id} and user_id = ${context.userId}`;
+    await assertPartyDeletable(sql, context.userId, data.id);
+    try {
+      await sql`delete from parties where id = ${data.id} and user_id = ${context.userId}`;
+    } catch (e) {
+      if (isForeignKeyViolation(e)) {
+        throw new Error("این طرف حساب سابقه مالی دارد و برای حفظ رسیدها و پرداخت‌ها قابل حذف نیست");
+      }
+      throw e;
+    }
     return { ok: true as const };
   });
 
