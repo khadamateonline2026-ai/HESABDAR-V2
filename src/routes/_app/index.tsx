@@ -191,15 +191,18 @@ function Dashboard() {
             </div>
           </Card>
 
-          <Card title="طرف حساب‌های نقدی" border="border-tab-c" tint="c">
-            {d?.cashParties?.length ? (
-              <CashPartyBoard rows={d.cashParties} />
-            ) : (
-              <DashLink to="/setup/parties" className="block">
-                <p className="text-2xs text-muted">طرف حساب نقدی ثبت نشده</p>
-              </DashLink>
-            )}
-          </Card>
+          {/* کارت «طرف حساب‌های نقدی» فقط وقتی بخش تولید روشن است نمایش داده می‌شود. */}
+          {production ? (
+            <Card title="طرف حساب‌های نقدی" border="border-tab-c" tint="c">
+              {d?.cashParties?.length ? (
+                <CashPartyBoard rows={d.cashParties} />
+              ) : (
+                <DashLink to="/setup/parties" className="block">
+                  <p className="text-2xs text-muted">طرف حساب نقدی ثبت نشده</p>
+                </DashLink>
+              )}
+            </Card>
+          ) : null}
 
           <Card title="وضعیت گدام‌ها" border="border-tab-d" tint="d">
             <ul className="divide-y divide-border">
