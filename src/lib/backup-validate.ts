@@ -35,6 +35,9 @@ export function buildManifest(tables: Record<string, unknown[]>): BackupManifest
  * currency (every real workspace has one), and — when the file carries a
  * manifest (all backups made by this version do) — row counts that match it.
  */
+/** ACC-09: purchase_receipts is rebuilt from purchases.received_qty on restore. */
+export const OPTIONAL_BACKUP_TABLES: readonly string[] = ["purchase_receipts"];
+
 export function validateWorkspaceBackup(parsed: unknown, requiredTables: readonly string[]): ValidBackup {
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error(INVALID);
   const obj = parsed as {
@@ -48,6 +51,10 @@ export function validateWorkspaceBackup(parsed: unknown, requiredTables: readonl
   }
   if (!obj.tables || typeof obj.tables !== "object" || Array.isArray(obj.tables)) throw new Error(INVALID);
   const tables = obj.tables as Record<string, unknown>;
+  // Tables added after older backups were made start empty when absent.
+  for (const name of OPTIONAL_BACKUP_TABLES) {
+    if (requiredTables.includes(name) && tables[name] === undefined) tables[name] = [];
+  }
   const missing = requiredTables.filter((name) => !Array.isArray(tables[name]));
   if (missing.length) {
     throw new Error(`پشتیبان ناقص است؛ این جدول‌ها در فایل نیستند: ${missing.join("، ")}. هیچ داده‌ای تغییر نکرد.`);

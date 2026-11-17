@@ -96,6 +96,15 @@ test("SEC-01 invariant: write handlers check every client-sent id", () => {
     const src = readFileSync(join(process.cwd(), "src/lib/api", file), "utf8");
     const start = src.indexOf(`export const ${name} =`);
     const next = src.indexOf("\nexport ", start + 1);
-    assert.match(src.slice(start, next < 0 ? undefined : next), /assertOwned\(/, `${file}:${name}`);
+    let body = src.slice(start, next < 0 ? undefined : next);
+    // A handler may delegate to an exported `${name}Tx(...)` (used by tests);
+    // then the check must live in that function.
+    if (body.includes(`${name}Tx(`)) {
+      const tx = src.indexOf(`export async function ${name}Tx(`);
+      assert.ok(tx >= 0, `${file}:${name}Tx`);
+      const txNext = src.indexOf("\nexport ", tx + 1);
+      body += src.slice(tx, txNext < 0 ? undefined : txNext);
+    }
+    assert.match(body, /assertOwned\(/, `${file}:${name}`);
   }
 });

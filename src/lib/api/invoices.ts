@@ -1,7 +1,7 @@
 import { createServerFn } from "@tanstack/react-start";
 import { authMiddleware } from "@/lib/auth/middleware";
 import { withTransaction, type Sql } from "@/lib/db";
-import { convertAmount, formatMoney, num, text } from "@/lib/format";
+import { convertAmount, formatMoney, num, text, todayIso } from "@/lib/format";
 import type { InvoiceLine, Item, PurchaseInvoice, ReceiveStatus, SaleInvoice } from "@/lib/types";
 import { syncLinkedPayment } from "./linked-payment";
 import {
@@ -19,7 +19,31 @@ import {
 import { assertOwned } from "./ownership";
 import { idempotent } from "./idempotency";
 
+type PurchaseIn = {
+  id?: number;
+  vendorId: number | null;
+  occurredOn: string;
+  expectedOn: string;
+  currencyId: number;
+  fxEnabled: boolean;
+  fxRate: number;
+  paidAmount: number;
+  accountId: number | null;
+  notes: string;
+  lines: LineIn[];
+};
+
+type ReceiveIn = {
+  id: number;
+  warehouseName: string;
+  categoryId: number | null;
+  mode: "full" | "partial";
+  lines: { id: number; receivedQty: number; notes: string }[];
+};
+
 type LineIn = {
+  /** ACC-09: id of an existing purchase line being edited (absent for new lines). */
+  id?: number | null;
   itemId: number | null;
   itemName: string;
   quantity: number;
@@ -189,23 +213,149 @@ function toPurchaseInvoice(h: Record<string, unknown>, lineRows: Record<string, 
   };
 }
 
+export async function savePurchaseInvoiceTx(sql: Sql, userId: string, data: PurchaseIn) {
+  const cleanLines = data.lines.filter((l) => l.itemName.trim() && l.quantity > 0);
+  if (!cleanLines.length) throw new Error("حداقل یک ردیف کالا لازم است");
+        await assertOwned(sql, userId, [
+          ["parties", data.vendorId],
+          ["accounts", data.accountId],
+          ["currencies", data.currencyId],
+          ["purchase_invoices", data.id],
+          ...cleanLines.flatMap((l) => [["items", l.itemId] as const, ["units", l.unitId] as const]),
+        ]);
+  await assertPurchaseFunds(sql, userId, {
+    accountId: data.accountId,
+    paidAmount: data.paidAmount,
+    currencyId: data.currencyId,
+    fxEnabled: data.fxEnabled,
+    fxRate: data.fxRate,
+    invoiceId: data.id,
+  });
+  const rate = fxRate(data.fxEnabled, data.fxRate, 1);
+  let id = data.id;
+  let invoiceNo = "";
+  // ACC-08/ACC-09: stock lock first — editing can remove received goods.
+  await lockStock(sql, userId);
+  const oldLines = id
+    ? await sql<{ id: number; item_id: number | null; item_name: string; received_qty: unknown }>`
+        select id, item_id, item_name, received_qty from purchases
+        where invoice_id = ${id} and user_id = ${userId}
+      `
+    : [];
+  if (id) {
+    const row = await sql<{ invoice_no: string }>`
+      select invoice_no from purchase_invoices where id = ${id} and user_id = ${userId}
+    `;
+    if (!row[0]) throw new Error("فاکتور یافت نشد");
+    invoiceNo = row[0].invoice_no;
+    await sql`
+      update purchase_invoices set
+        vendor_id = ${data.vendorId}, occurred_on = ${data.occurredOn}, expected_on = ${data.expectedOn || null},
+        currency_id = ${data.currencyId}, fx_enabled = ${data.fxEnabled}, fx_rate = ${rate},
+        paid_amount = ${data.paidAmount}, account_id = ${data.accountId}, notes = ${data.notes}
+      where id = ${id} and user_id = ${userId}
+    `;
+  } else {
+    invoiceNo = await allocInvoiceNo(sql, userId, "purchase_invoices", "B");
+    const rows = await sql<{ id: number }>`
+      insert into purchase_invoices (
+        user_id, vendor_id, invoice_no, occurred_on, expected_on, currency_id, fx_enabled, fx_rate,
+        paid_amount, account_id, notes, receive_status
+      ) values (
+        ${userId}, ${data.vendorId}, ${invoiceNo}, ${data.occurredOn}, ${data.expectedOn || null},
+        ${data.currencyId}, ${data.fxEnabled}, ${rate}, ${data.paidAmount}, ${data.accountId}, ${data.notes},
+        ${"in_transit"}
+      ) returning id
+    `;
+    id = rows[0].id;
+  }
+  if (!id) throw new Error("فاکتور ذخیره نشد");
+  // ACC-09: existing lines are updated in place (matched by line id), so
+  // their receipts (quantity, warehouse, date) are kept. Clients that do
+  // not send line ids yet fall back to matching by item name.
+  const byId = new Map(oldLines.map((o) => [num(o.id), o]));
+  const sendsIds = cleanLines.some((l) => l.id != null);
+  const used = new Set<number>();
+  const removed: { itemId: number | null; itemName: string; qty: number }[] = [];
+  const trims: [number, number][] = [];
+  let lineNo = 1;
+  let allArrived = cleanLines.length > 0;
+  for (const l of cleanLines) {
+    const name = l.itemName.trim();
+    const lid = l.id == null ? null : Number(l.id);
+    let match = lid != null && !used.has(lid) ? byId.get(lid) : undefined;
+    if (!match && !sendsIds) match = oldLines.find((o) => !used.has(num(o.id)) && text(o.item_name) === name);
+    if (match) {
+      const mid = num(match.id);
+      used.add(mid);
+      const rec = match.received_qty == null ? 0 : num(match.received_qty);
+      const oldItem = match.item_id == null ? null : num(match.item_id);
+      const sameItem = l.itemId != null ? oldItem === l.itemId : text(match.item_name) === name;
+      if (rec > 1e-9 && !sameItem) {
+        throw new Error(`ردیف «${text(match.item_name)}» رسیده است و کالای آن را نمی‌توان عوض کرد؛ ردیف تازه اضافه کنید`);
+      }
+      if (rec > l.quantity + 1e-9) {
+        removed.push({ itemId: l.itemId, itemName: name, qty: rec - l.quantity });
+        trims.push([mid, rec - l.quantity]);
+      }
+      if (Math.min(rec, l.quantity) + 1e-9 < l.quantity) allArrived = false;
+      await sql`
+        update purchases set
+          vendor_id = ${data.vendorId}, item_id = ${l.itemId}, item_name = ${name}, quantity = ${l.quantity},
+          unit_id = ${l.unitId}, unit_price = ${l.unitPrice}, currency_id = ${data.currencyId},
+          account_id = ${data.accountId}, occurred_on = ${data.occurredOn}, notes = ${l.notes ?? ""},
+          invoice_no = ${invoiceNo}, line_no = ${lineNo}
+        where id = ${mid} and user_id = ${userId}
+      `;
+    } else {
+      allArrived = false;
+      await sql`
+        insert into purchases (
+          user_id, vendor_id, item_id, item_name, quantity, received_qty, unit_id, unit_price, currency_id,
+          account_id, warehouse_name, occurred_on, notes, status, invoice_no, invoice_id, line_no
+        ) values (
+          ${userId}, ${data.vendorId}, ${l.itemId}, ${name}, ${l.quantity}, ${0},
+          ${l.unitId}, ${l.unitPrice}, ${data.currencyId}, ${data.accountId}, ${""}, ${data.occurredOn},
+          ${l.notes ?? ""}, ${"final"}, ${invoiceNo}, ${id}, ${lineNo}
+        )
+      `;
+    }
+    lineNo += 1;
+  }
+  const dropped = oldLines.filter((o) => !used.has(num(o.id)));
+  for (const o of dropped) {
+    removed.push({
+      itemId: o.item_id == null ? null : num(o.item_id),
+      itemName: text(o.item_name),
+      qty: o.received_qty == null ? 0 : num(o.received_qty),
+    });
+  }
+  // ACC-11: received goods that were already sold or used cannot be removed.
+  await assertReceiptsRemovable(sql, userId, removed);
+  for (const [pid, qty] of trims) await trimReceipts(sql, userId, pid, qty);
+  for (const o of dropped) await sql`delete from purchases where id = ${num(o.id)} and user_id = ${userId}`;
+  const status: ReceiveStatus = allArrived && oldLines.length > 0 ? "arrived" : "in_transit";
+  await sql`
+    update purchase_invoices set receive_status = ${status}
+    where id = ${id} and user_id = ${userId}
+  `;
+  await syncLinkedPayment(sql, {
+    userId: userId,
+    kind: "payment",
+    partyId: data.vendorId,
+    amount: data.paidAmount,
+    currencyId: data.currencyId,
+    accountId: data.accountId,
+    occurredOn: data.occurredOn,
+    purchaseInvoiceId: id,
+    label: `پرداخت فاکتور ${invoiceNo}`,
+  });
+  return { id, invoiceNo };
+}
+
 export const savePurchaseInvoice = createServerFn({ method: "POST" })
   .middleware([authMiddleware])
-  .validator(
-    (d: {
-      id?: number;
-      vendorId: number | null;
-      occurredOn: string;
-      expectedOn: string;
-      currencyId: number;
-      fxEnabled: boolean;
-      fxRate: number;
-      paidAmount: number;
-      accountId: number | null;
-      notes: string;
-      lines: LineIn[];
-    }) => d,
-  )
+  .validator((d: PurchaseIn) => d)
   .handler(async ({ context, data }) =>
     // STR-04: a replayed offline save returns its first result.
     idempotent(context.userId, async () => {
@@ -214,100 +364,7 @@ export const savePurchaseInvoice = createServerFn({ method: "POST" })
       if (!cleanLines.length) throw new Error("حداقل یک ردیف کالا لازم است");
       for (let attempt = 0; attempt < 5; attempt++) {
         try {
-          return await withTransaction(async (sql) => {
-            await assertOwned(sql, context.userId, [
-              ["parties", data.vendorId],
-              ["accounts", data.accountId],
-              ["currencies", data.currencyId],
-              ["purchase_invoices", data.id],
-              ...cleanLines.flatMap((l) => [["items", l.itemId] as const, ["units", l.unitId] as const]),
-            ]);
-      await assertPurchaseFunds(sql, context.userId, {
-        accountId: data.accountId,
-        paidAmount: data.paidAmount,
-        currencyId: data.currencyId,
-        fxEnabled: data.fxEnabled,
-        fxRate: data.fxRate,
-        invoiceId: data.id,
-      });
-      const rate = fxRate(data.fxEnabled, data.fxRate, 1);
-      let id = data.id;
-      let invoiceNo = "";
-      const oldLines = id
-        ? await sql<Record<string, unknown>>`
-            select id, item_name, received_qty, warehouse_name from purchases
-            where invoice_id = ${id} and user_id = ${context.userId}
-          `
-        : [];
-      if (id) {
-        const row = await sql<{ invoice_no: string }>`
-          select invoice_no from purchase_invoices where id = ${id} and user_id = ${context.userId}
-        `;
-        if (!row[0]) throw new Error("فاکتور یافت نشد");
-        invoiceNo = row[0].invoice_no;
-        await sql`
-          update purchase_invoices set
-            vendor_id = ${data.vendorId}, occurred_on = ${data.occurredOn}, expected_on = ${data.expectedOn || null},
-            currency_id = ${data.currencyId}, fx_enabled = ${data.fxEnabled}, fx_rate = ${rate},
-            paid_amount = ${data.paidAmount}, account_id = ${data.accountId}, notes = ${data.notes}
-          where id = ${id} and user_id = ${context.userId}
-        `;
-        await sql`delete from purchases where invoice_id = ${id} and user_id = ${context.userId}`;
-      } else {
-        invoiceNo = await allocInvoiceNo(sql, context.userId, "purchase_invoices", "B");
-        const rows = await sql<{ id: number }>`
-          insert into purchase_invoices (
-            user_id, vendor_id, invoice_no, occurred_on, expected_on, currency_id, fx_enabled, fx_rate,
-            paid_amount, account_id, notes, receive_status
-          ) values (
-            ${context.userId}, ${data.vendorId}, ${invoiceNo}, ${data.occurredOn}, ${data.expectedOn || null},
-            ${data.currencyId}, ${data.fxEnabled}, ${rate}, ${data.paidAmount}, ${data.accountId}, ${data.notes},
-            ${"in_transit"}
-          ) returning id
-        `;
-        id = rows[0].id;
-      }
-      if (!id) throw new Error("فاکتور ذخیره نشد");
-      let lineNo = 1;
-      const usedOld = new Set<number>();
-      let allArrived = cleanLines.length > 0;
-      for (const l of cleanLines) {
-        const name = l.itemName.trim();
-        const match = oldLines.find((o) => !usedOld.has(num(o.id)) && text(o.item_name) === name);
-        if (match) usedOld.add(num(match.id));
-        const rec = Math.min(l.quantity, match ? num(match.received_qty) : 0);
-        const wh = match ? text(match.warehouse_name) : "";
-        if (rec + 1e-9 < l.quantity) allArrived = false;
-        await sql`
-          insert into purchases (
-            user_id, vendor_id, item_id, item_name, quantity, received_qty, unit_id, unit_price, currency_id,
-            account_id, warehouse_name, occurred_on, notes, status, invoice_no, invoice_id, line_no
-          ) values (
-            ${context.userId}, ${data.vendorId}, ${l.itemId}, ${name}, ${l.quantity}, ${rec},
-            ${l.unitId}, ${l.unitPrice}, ${data.currencyId}, ${data.accountId}, ${wh}, ${data.occurredOn},
-            ${l.notes ?? ""}, ${"final"}, ${invoiceNo}, ${id}, ${lineNo}
-          )
-        `;
-        lineNo += 1;
-      }
-      const status: ReceiveStatus = allArrived && oldLines.length > 0 ? "arrived" : "in_transit";
-      await sql`
-        update purchase_invoices set receive_status = ${status}
-        where id = ${id} and user_id = ${context.userId}
-      `;
-      await syncLinkedPayment(sql, {
-        userId: context.userId,
-        kind: "payment",
-        partyId: data.vendorId,
-        amount: data.paidAmount,
-        currencyId: data.currencyId,
-        accountId: data.accountId,
-        occurredOn: data.occurredOn,
-        purchaseInvoiceId: id,
-        label: `پرداخت فاکتور ${invoiceNo}`,
-      });
-      return { id, invoiceNo };
-          });
+          return await withTransaction((sql) => savePurchaseInvoiceTx(sql, context.userId, data));
         } catch (err) {
           if (data.id || attempt === 4 || !isUniqueViolation(err)) throw err;
         }
@@ -352,6 +409,31 @@ export async function assertReceiptsRemovable(
   }
 }
 
+/** ACC-09: take `qty` back off a line's receipts, newest first. */
+export async function trimReceipts(sql: Sql, userId: string, purchaseId: number, qty: number): Promise<void> {
+  let left = qty;
+  const rows = await sql<{ id: number; quantity: unknown }>`
+    select id, quantity from purchase_receipts
+    where purchase_id = ${purchaseId} and user_id = ${userId}
+    order by occurred_on desc, id desc
+  `;
+  for (const r of rows) {
+    if (left <= 1e-9) break;
+    const q = num(r.quantity);
+    if (q <= left + 1e-9) {
+      await sql`delete from purchase_receipts where id = ${r.id} and user_id = ${userId}`;
+      left -= q;
+    } else {
+      await sql`update purchase_receipts set quantity = ${q - left} where id = ${r.id} and user_id = ${userId}`;
+      left = 0;
+    }
+  }
+  await sql`
+    update purchases set received_qty = greatest(0, coalesce(received_qty, 0) - ${qty})
+    where id = ${purchaseId} and user_id = ${userId}
+  `;
+}
+
 /** ACC-11: delete a purchase invoice only when its received goods are still in stock. */
 export async function deletePurchaseInvoiceTx(tx: Sql, userId: string, id: number): Promise<void> {
   await lockStock(tx, userId);
@@ -381,70 +463,98 @@ export const deletePurchaseInvoice = createServerFn({ method: "POST" })
     return { ok: true as const };
   });
 
+export async function receivePurchaseInvoiceTx(sql: Sql, userId: string, data: ReceiveIn) {
+  // ACC-08: stock lock first (a receive can also lower received quantities).
+  await lockStock(sql, userId);
+  await assertOwned(sql, userId, [["item_categories", data.categoryId]]);
+  const header = await sql<{ id: number }>`
+    select id from purchase_invoices where id = ${data.id} and user_id = ${userId}
+    for update
+  `;
+  if (!header[0]) throw new Error("فاکتور یافت نشد");
+  const lines = await sql<{
+    id: number;
+    quantity: unknown;
+    received_qty: unknown;
+    item_id: number | null;
+    item_name: string;
+    warehouse_name: string;
+  }>`
+    select id, quantity, received_qty, item_id, item_name, warehouse_name from purchases
+    where invoice_id = ${data.id} and user_id = ${userId}
+  `;
+  const wh = data.warehouseName.trim();
+  if (!wh) throw new Error("گدام را انتخاب کنید");
+  // ACC-09: each receipt is its own row (quantity, warehouse, date); the
+  // line keeps the running total and the latest warehouse only.
+  const today = todayIso();
+  const wanted =
+    data.mode === "full"
+      ? lines.map((row) => ({ row, next: num(row.quantity), notes: null as string | null }))
+      : data.lines.flatMap((l) => {
+          const row = lines.find((x) => x.id === l.id);
+          if (!row) return [];
+          const prev = row.received_qty == null ? 0 : num(row.received_qty);
+          return [{ row, next: Math.min(num(row.quantity), Math.max(0, prev + l.receivedQty)), notes: l.notes }];
+        });
+  const lowered = wanted.filter((w) => w.next + 1e-9 < (w.row.received_qty == null ? 0 : num(w.row.received_qty)));
+  if (lowered.length) {
+    await assertReceiptsRemovable(
+      sql,
+      userId,
+      lowered.map((w) => ({
+        itemId: w.row.item_id == null ? null : num(w.row.item_id),
+        itemName: text(w.row.item_name),
+        qty: num(w.row.received_qty) - w.next,
+      })),
+    );
+  }
+  for (const w of wanted) {
+    const prev = w.row.received_qty == null ? 0 : num(w.row.received_qty);
+    const delta = w.next - prev;
+    if (delta > 1e-9) {
+      await sql`
+        insert into purchase_receipts (user_id, purchase_id, quantity, warehouse_name, occurred_on)
+        values (${userId}, ${w.row.id}, ${delta}, ${wh}, ${today})
+      `;
+    } else if (delta < -1e-9) {
+      await trimReceipts(sql, userId, w.row.id, -delta);
+    }
+    await sql`
+      update purchases set received_qty = ${w.next},
+        warehouse_name = ${delta > 1e-9 ? wh : text(w.row.warehouse_name)},
+        notes = coalesce(${w.notes}, notes)
+      where id = ${w.row.id} and user_id = ${userId}
+    `;
+  }
+  if (data.categoryId) {
+    for (const l of lines) {
+      if (l.item_id) {
+        await sql`update items set category_id = ${data.categoryId} where id = ${l.item_id} and user_id = ${userId}`;
+      }
+    }
+  }
+  const after = await sql<{ quantity: unknown; received_qty: unknown }>`
+    select quantity, received_qty from purchases where invoice_id = ${data.id} and user_id = ${userId}
+  `;
+  const arrived = after.every((l) => num(l.received_qty) + 1e-9 >= num(l.quantity));
+  const status: ReceiveStatus = arrived ? "arrived" : "in_transit";
+  await sql`
+    update purchase_invoices set receive_status = ${status}
+    where id = ${data.id} and user_id = ${userId}
+  `;
+  return { status };
+}
+
 export const receivePurchaseInvoice = createServerFn({ method: "POST" })
   .middleware([authMiddleware])
-  .validator(
-    (d: {
-      id: number;
-      warehouseName: string;
-      categoryId: number | null;
-      mode: "full" | "partial";
-      lines: { id: number; receivedQty: number; notes: string }[];
-    }) => d,
-  )
+  .validator((d: ReceiveIn) => d)
   .handler(async ({ context, data }) =>
     // STR-04: a replayed offline save returns its first result.
     idempotent(context.userId, async () => {
       await guard(context.userId, "purchase");
       // STR-03: line quantities, item categories and the invoice status change together; the invoice row is locked so two partial receives are applied one after the other.
-      return withTransaction(async (sql) => {
-        await assertOwned(sql, context.userId, [["item_categories", data.categoryId]]);
-        const header = await sql<{ id: number }>`
-          select id from purchase_invoices where id = ${data.id} and user_id = ${context.userId}
-          for update
-        `;
-        if (!header[0]) throw new Error("فاکتور یافت نشد");
-        const lines = await sql<{ id: number; quantity: unknown; received_qty: unknown; item_id: number | null }>`
-          select id, quantity, received_qty, item_id from purchases
-          where invoice_id = ${data.id} and user_id = ${context.userId}
-        `;
-        const wh = data.warehouseName.trim();
-        if (!wh) throw new Error("گدام را انتخاب کنید");
-        if (data.mode === "full") {
-          await sql`
-            update purchases set received_qty = quantity, warehouse_name = ${wh}
-            where invoice_id = ${data.id} and user_id = ${context.userId}
-          `;
-        } else {
-          for (const l of data.lines) {
-            const row = lines.find((x) => x.id === l.id);
-            if (!row) continue;
-            const prev = row.received_qty == null ? 0 : num(row.received_qty);
-            const next = Math.min(num(row.quantity), Math.max(0, prev + l.receivedQty));
-            await sql`
-              update purchases set received_qty = ${next}, warehouse_name = ${wh}, notes = ${l.notes}
-              where id = ${l.id} and user_id = ${context.userId}
-            `;
-          }
-        }
-        if (data.categoryId) {
-          for (const l of lines) {
-            if (l.item_id) {
-              await sql`update items set category_id = ${data.categoryId} where id = ${l.item_id} and user_id = ${context.userId}`;
-            }
-          }
-        }
-        const after = await sql<{ quantity: unknown; received_qty: unknown }>`
-          select quantity, received_qty from purchases where invoice_id = ${data.id} and user_id = ${context.userId}
-        `;
-        const arrived = after.every((l) => num(l.received_qty) + 1e-9 >= num(l.quantity));
-        const status: ReceiveStatus = arrived ? "arrived" : "in_transit";
-        await sql`
-          update purchase_invoices set receive_status = ${status}
-          where id = ${data.id} and user_id = ${context.userId}
-        `;
-        return { status };
-      });
+      return withTransaction((sql) => receivePurchaseInvoiceTx(sql, context.userId, data));
     }),
   );
 

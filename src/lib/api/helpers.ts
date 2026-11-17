@@ -631,6 +631,7 @@ export const WORKSPACE_TABLES = [
   "opening_stock",
   "purchase_invoices",
   "purchases",
+  "purchase_receipts",
   "sale_invoices",
   "sales",
   "expenses",
@@ -783,6 +784,15 @@ export async function restoreWorkspaceTx(
     }
   }
   await advanceIdSequences(tx, allowed);
+  // ACC-09: backups made before purchase_receipts existed carry only the
+  // received total per line — rebuild one receipt per received line.
+  await tx`
+    insert into purchase_receipts (user_id, purchase_id, quantity, warehouse_name, occurred_on)
+    select p.user_id, p.id, p.received_qty, coalesce(p.warehouse_name, ''), p.occurred_on
+    from purchases p
+    where p.user_id = ${userId} and p.received_qty > 0
+      and not exists (select 1 from purchase_receipts r where r.purchase_id = p.id and r.user_id = p.user_id)
+  `;
   if (backup.profile?.display_name) {
     const role = ["supervisor", "accountant", "seller"].includes(String(backup.profile.role))
       ? String(backup.profile.role)

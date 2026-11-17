@@ -288,6 +288,8 @@ function PurchaseForm({
                   accountId,
                   notes,
                   lines: lines.map((l) => ({
+                    // ACC-09: existing lines keep their id so their receipts are kept.
+                    id: initial?.lines.some((x) => String(x.id) === l.key) ? Number(l.key) : null,
                     itemId: l.itemId,
                     itemName: l.itemName,
                     quantity: parseAmount(l.quantity),
