@@ -2,7 +2,7 @@ import { createServerFn } from "@tanstack/react-start";
 import { authMiddleware } from "@/lib/auth/middleware";
 import { num, text, todayIso } from "@/lib/format";
 import type { DashboardAlert, DashboardData } from "@/lib/types";
-import { fxToBase, loadCatalogs, loadInventoryValuation, requireProfile, sqlOf, wageForProduct } from "./helpers";
+import { fxToBase, loadCatalogs, loadInventoryValuation, loadWarehouseStock, requireProfile, sqlOf, wageForProduct } from "./helpers";
 import { loadRecurringDues } from "./ops";
 import { loadPartySummaries } from "./reports";
 
@@ -350,38 +350,19 @@ export const getDashboard = createServerFn({ method: "GET" })
       }
       viewWage = 0;
       viewPayable = payableBase - workerWagePayableBase;
-      const opening = await sql<{ kind: string; warehouse_name: string; quantity: unknown; value_base: unknown }>`
-        select kind, warehouse_name, quantity, value_base from opening_stock where user_id = ${context.userId}
-      `;
-      const rec = new Map<string, { qty: number; value: number }>();
-      for (const w of catalogs.warehouses) rec.set(w.name, { qty: 0, value: 0 });
-      if (!rec.size) rec.set("گدام اصلی", { qty: 0, value: 0 });
-      const addRec = (name: string, qty: number, value: number) => {
-        const key = name.trim() || [...rec.keys()][0];
-        const cur = rec.get(key) ?? { qty: 0, value: 0 };
-        cur.qty += qty;
-        cur.value += value;
-        rec.set(key, cur);
-      };
-      for (const o of opening) {
-        if (text(o.kind) !== "raw") continue;
-        addRec(text(o.warehouse_name), num(o.quantity), num(o.value_base));
-      }
-      for (const p of purchases) {
-        const qty = p.received_qty == null ? 0 : num(p.received_qty);
-        if (qty <= 0) continue;
-        addRec(text(p.warehouse_name), qty, qty * num(p.unit_price) * lineRate(p));
-      }
-      const remainQty = inv.raw.reduce((s, c) => s + c.qty, 0);
-      const remainVal = inv.raw.reduce((s, c) => s + c.valueBase, 0);
-      const recQty = [...rec.values()].reduce((s, r) => s + r.qty, 0);
-      const recVal = [...rec.values()].reduce((s, r) => s + r.value, 0);
-      const first = [...rec.keys()][0];
-      viewWarehouses = [...rec.entries()].map(([name, r]) => ({
-        name,
-        qty: recQty > 1e-9 ? remainQty * (r.qty / recQty) : name === first ? remainQty : 0,
-        valueBase: recVal > 1e-9 ? remainVal * (r.value / recVal) : name === first ? remainVal : 0,
-      }));
+      // ACC-10: same per-warehouse breakdown as the warehouse page.
+      const real = new Set(catalogs.warehouses.map((w) => w.name));
+      const stock = await loadWarehouseStock(sql, context.userId, inv);
+      viewWarehouses = stock
+        .map((w) => {
+          const raw = w.items.filter((i) => i.kind === "raw");
+          return {
+            name: w.warehouseName,
+            qty: raw.reduce((s, i) => s + i.qty, 0),
+            valueBase: raw.reduce((s, i) => s + i.valueBase, 0),
+          };
+        })
+        .filter((w) => real.has(w.name) || Math.abs(w.qty) > 1e-9 || !real.size);
     }
 
     return {

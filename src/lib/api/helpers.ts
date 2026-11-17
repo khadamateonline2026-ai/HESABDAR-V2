@@ -1301,6 +1301,91 @@ export async function loadInventoryValuation(
   };
 }
 
+export type WarehouseStockRow = {
+  warehouseName: string;
+  items: { name: string; qty: number; valueBase: number; kind: Item["kind"] }[];
+};
+
+export const MAIN_WAREHOUSE = "گدام اصلی";
+
+/**
+ * ACC-10: one per-warehouse breakdown for the warehouse page and the
+ * dashboard. On-hand quantity and value come from the stock cards (so sales,
+ * production use and the frozen exchange rate are all included); each item is
+ * split over warehouses in proportion to what came into each one (opening
+ * stock and purchase receipts). Sales carry no warehouse yet, so they reduce
+ * every warehouse of that item proportionally.
+ */
+export async function loadWarehouseStock(
+  sql: Sql,
+  userId: string,
+  inventory?: InventoryState,
+): Promise<WarehouseStockRow[]> {
+  const [inv, warehouses, opening, purchases, receipts] = await Promise.all([
+    inventory ?? loadInventoryState(sql, userId),
+    sql<{ name: string }>`select name from warehouses where user_id = ${userId} order by id`,
+    sql<{ item_name: string; warehouse_name: string; quantity: unknown }>`
+      select item_name, warehouse_name, quantity from opening_stock where user_id = ${userId}
+    `,
+    sql<{ id: number; item_id: number | null; item_name: string; received_qty: unknown; warehouse_name: string | null }>`
+      select id, item_id, item_name, received_qty, warehouse_name from purchases
+      where user_id = ${userId} and received_qty > 0
+    `,
+    sql<{ purchase_id: number; quantity: unknown; warehouse_name: string }>`
+      select purchase_id, quantity, warehouse_name from purchase_receipts where user_id = ${userId}
+    `,
+  ]);
+  const names = warehouses.map((w) => text(w.name));
+  if (!names.includes(MAIN_WAREHOUSE)) names.unshift(MAIN_WAREHOUSE);
+  const whOf = (n: unknown) => text(n).trim() || MAIN_WAREHOUSE;
+  const cards = [...inv.raw, ...inv.products];
+  const nameById = new Map(cards.map((c) => [c.itemId, c.name]));
+  const inflow = new Map<string, Map<string, number>>();
+  const add = (item: string, wh: string, qty: number) => {
+    const m = inflow.get(item) ?? new Map<string, number>();
+    inflow.set(item, m);
+    m.set(wh, (m.get(wh) ?? 0) + qty);
+  };
+  for (const o of opening) add(text(o.item_name), whOf(o.warehouse_name), num(o.quantity));
+  const byPurchase = new Map<number, { wh: string; qty: number }[]>();
+  for (const r of receipts) {
+    const arr = byPurchase.get(num(r.purchase_id)) ?? [];
+    arr.push({ wh: whOf(r.warehouse_name), qty: num(r.quantity) });
+    byPurchase.set(num(r.purchase_id), arr);
+  }
+  for (const p of purchases) {
+    const name = (p.item_id != null && nameById.get(num(p.item_id))) || text(p.item_name);
+    let left = num(p.received_qty);
+    for (const r of byPurchase.get(num(p.id)) ?? []) {
+      add(name, r.wh, r.qty);
+      left -= r.qty;
+    }
+    // Receipts that do not add up (older data) go to the line's warehouse.
+    if (left > 1e-9) add(name, whOf(p.warehouse_name), left);
+  }
+  const out = new Map<string, WarehouseStockRow["items"]>();
+  const put = (wh: string, row: WarehouseStockRow["items"][number]) => {
+    if (!names.includes(wh)) names.push(wh);
+    const arr = out.get(wh) ?? [];
+    arr.push(row);
+    out.set(wh, arr);
+  };
+  for (const c of cards) {
+    if (c.qty <= 1e-9) continue;
+    const flows = [...(inflow.get(c.name)?.entries() ?? [])].filter(([, q]) => q > 1e-9);
+    const total = flows.reduce((s, [, q]) => s + q, 0);
+    if (total <= 1e-9) {
+      put(MAIN_WAREHOUSE, { name: c.name, qty: c.qty, valueBase: c.valueBase, kind: c.kind });
+      continue;
+    }
+    for (const [wh, q] of flows) {
+      const share = q / total;
+      put(wh, { name: c.name, qty: c.qty * share, valueBase: c.valueBase * share, kind: c.kind });
+    }
+  }
+  return names.map((warehouseName) => ({ warehouseName, items: out.get(warehouseName) ?? [] }));
+}
+
 export function wageForProduct(
   productName: string,
   jobTypeId: number | null,

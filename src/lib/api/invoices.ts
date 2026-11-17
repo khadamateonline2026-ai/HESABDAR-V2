@@ -9,8 +9,8 @@ import {
   guard,
   itemKindOf,
   loadCatalogs,
-  fxToBase,
   loadInventoryState,
+  loadWarehouseStock,
   lockStock,
   nextDocNo,
   requireProfile,
@@ -909,77 +909,7 @@ export const getWarehouseStock = createServerFn({ method: "GET" })
   .handler(async ({ context }) => {
     const sql = await sqlOf();
     await requireProfile(sql, context.userId);
-    const [opening, purchases, sales, warehouses, currencies, itemPrices] = await Promise.all([
-      sql<Record<string, unknown>>`select * from opening_stock where user_id = ${context.userId}`,
-      sql<Record<string, unknown>>`
-        select p.*, i.fx_enabled as inv_fx, i.fx_rate as inv_rate
-        from purchases p
-        left join purchase_invoices i on i.id = p.invoice_id and i.user_id = p.user_id
-        where p.user_id = ${context.userId}
-      `,
-      sql<Record<string, unknown>>`select * from sales where user_id = ${context.userId}`,
-      sql<{ id: number; name: string }>`select id, name from warehouses where user_id = ${context.userId} order by id`,
-      sql<{ id: number; rate_to_base: unknown }>`select id, rate_to_base from currencies where user_id = ${context.userId}`,
-      sql<{ name: string; purchase_price: unknown }>`select name, purchase_price from items where user_id = ${context.userId}`,
-    ]);
-    const purchasePrice = new Map(itemPrices.map((i) => [text(i.name), num(i.purchase_price)]));
-    const rates = new Map(currencies.map((c) => [num(c.id), num(c.rate_to_base) || 1]));
-    const names = warehouses.map((w) => w.name);
-    if (!names.includes("گدام اصلی")) names.unshift("گدام اصلی");
-    type Cell = { qty: number; value: number; kind: Item["kind"] };
-    const map = new Map<string, Map<string, Cell>>();
-    function cell(wh: string, item: string, kind: Item["kind"]): Cell {
-      const bucket = map.get(wh) ?? new Map();
-      map.set(wh, bucket);
-      const c = bucket.get(item) ?? { qty: 0, value: 0, kind };
-      bucket.set(item, c);
-      return c;
-    }
-    for (const o of opening) {
-      const c = cell(text(o.warehouse_name) || "گدام اصلی", text(o.item_name), text(o.kind) === "raw" ? "raw" : "product");
-      const qty = num(o.quantity);
-      if (qty < 0) {
-        // ACC-02: a negative adjustment leaves at the current average cost.
-        const take = Math.min(c.qty, -qty);
-        if (take > 0) c.value -= take * (c.value / c.qty);
-        c.qty += qty;
-        continue;
-      }
-      // ACC-02: same valuation as the stock cards (stored value, else item purchase price).
-      const stored = num(o.value_base);
-      const price = purchasePrice.get(text(o.item_name)) ?? 0;
-      c.qty += qty;
-      c.value += Math.abs(stored) > 1e-9 ? stored : price > 1e-9 ? qty * price : 0;
-    }
-    for (const p of purchases) {
-      const rec = p.received_qty == null ? 0 : num(p.received_qty);
-      if (rec <= 0) continue;
-      // ACC-02: actual purchase cost at the invoice's frozen exchange rate.
-      const rate = fxToBase(p.inv_fx, p.inv_rate, rates.get(num(p.currency_id)) ?? 1);
-      const unit = rec > 0 ? (num(p.unit_price) * rate) : 0;
-      const c = cell(text(p.warehouse_name) || "گدام اصلی", text(p.item_name), "raw");
-      c.qty += rec;
-      c.value += rec * unit;
-    }
-    for (const s of sales) {
-      const qty = num(s.quantity);
-      let left = qty;
-      for (const wh of names) {
-        if (left <= 0) break;
-        const bucket = map.get(wh);
-        const c = bucket?.get(text(s.item_name));
-        if (!c || c.qty <= 0) continue;
-        const take = Math.min(c.qty, left);
-        const cost = c.qty > 0 ? c.value / c.qty : 0;
-        c.qty -= take;
-        c.value -= take * cost;
-        left -= take;
-      }
-    }
-    return names.map((warehouseName) => ({
-      warehouseName,
-      items: [...(map.get(warehouseName)?.entries() ?? [])]
-        .filter(([, v]) => Math.abs(v.qty) > 1e-9)
-        .map(([name, v]) => ({ name, qty: v.qty, valueBase: v.value, kind: v.kind })),
-    }));
+    // ACC-10: same breakdown as the dashboard, built from the stock cards.
+    const rows = await loadWarehouseStock(sql, context.userId);
+    return rows.map((w) => ({ ...w, items: w.items.filter((i) => Math.abs(i.qty) > 1e-9) }));
   });
