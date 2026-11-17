@@ -3,7 +3,13 @@ import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import type { Role } from "@/lib/types";
 import type { SessionRoleSlot } from "@/lib/session-role-slot";
 
-type Payload = { u: string; r: Role; n: string; v: 2; exp: number };
+/**
+ * SEC-04: v3 adds `pv`, the workspace role-PIN version at issue time.
+ * authMiddleware drops the token when the stored version moved on (a PIN was
+ * changed/reset). v1 (no expiry) and v2 (no version) tokens are no longer
+ * accepted — holders simply enter their role PIN again.
+ */
+type Payload = { u: string; r: Role; n: string; v: 3; pv: number; exp: number };
 
 const als = new AsyncLocalStorage<SessionRoleSlot | null>();
 const TOKEN_TTL_MS = 12 * 60 * 60 * 1000;
@@ -36,12 +42,13 @@ function cleanName(name: string): string {
   return out.trim().slice(0, 80);
 }
 
-export function signRoleToken(userId: string, role: Role, displayName: string): string {
+export function signRoleToken(userId: string, role: Role, displayName: string, pinVersion: number): string {
   const payload: Payload = {
     u: userId,
     r: role,
     n: cleanName(displayName),
-    v: 2,
+    v: 3,
+    pv: Math.max(1, Math.floor(pinVersion) || 1),
     exp: Date.now() + TOKEN_TTL_MS,
   };
   const body = Buffer.from(JSON.stringify(payload)).toString("base64url");
@@ -49,7 +56,10 @@ export function signRoleToken(userId: string, role: Role, displayName: string): 
   return `${body}.${sig}`;
 }
 
-export function readRoleToken(token: string | null | undefined, userId: string): SessionRoleSlot | null {
+/** Verified token contents, including the PIN version it was issued for. */
+export type RoleTokenClaims = SessionRoleSlot & { pinVersion: number };
+
+export function readRoleToken(token: string | null | undefined, userId: string): RoleTokenClaims | null {
   if (!token || !userId) return null;
   const dot = token.indexOf(".");
   if (dot <= 0) return null;
@@ -62,14 +72,24 @@ export function readRoleToken(token: string | null | undefined, userId: string):
   if (a.length !== b.length || !timingSafeEqual(a, b)) return null;
   try {
     const parsed = JSON.parse(Buffer.from(body, "base64url").toString("utf8")) as Partial<Payload> & { v?: number };
-    if ((parsed.v !== 2 && parsed.v !== 1) || parsed.u !== userId || !isRole(parsed.r)) return null;
-    if (parsed.v === 2) {
-      if (typeof parsed.exp !== "number" || parsed.exp < Date.now()) return null;
-    }
-    return { role: parsed.r, displayName: cleanName(typeof parsed.n === "string" ? parsed.n : "") };
+    // SEC-04: only v3 (expiring + PIN-versioned) tokens are valid.
+    if (parsed.v !== 3 || parsed.u !== userId || !isRole(parsed.r)) return null;
+    if (typeof parsed.exp !== "number" || parsed.exp < Date.now()) return null;
+    if (typeof parsed.pv !== "number" || !Number.isFinite(parsed.pv)) return null;
+    return {
+      role: parsed.r,
+      displayName: cleanName(typeof parsed.n === "string" ? parsed.n : ""),
+      pinVersion: parsed.pv,
+    };
   } catch {
     return null;
   }
+}
+
+/** SEC-04: the role slot only while the token's PIN version is still current. */
+export function slotIfCurrent(claims: RoleTokenClaims | null, currentVersion: number): SessionRoleSlot | null {
+  if (!claims || claims.pinVersion !== currentVersion) return null;
+  return { role: claims.role, displayName: claims.displayName };
 }
 
 export async function setRoleCookie(token: string): Promise<void> {

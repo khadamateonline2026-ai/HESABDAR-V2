@@ -1,4 +1,6 @@
 import { assertPinShape, hashPin } from "@/lib/auth/pin-hash";
+import { peekSessionRole } from "@/lib/session-role-slot";
+import { forgetCachedRolePinVersion, getRolePinVersion } from "./role-pin";
 import { createServerFn } from "@tanstack/react-start";
 import { withTransaction, type Sql } from "@/lib/db";
 import { authMiddleware } from "@/lib/auth/middleware";
@@ -86,9 +88,18 @@ export const saveRoleCodes = createServerFn({ method: "POST" })
         role_code_supervisor = excluded.role_code_supervisor,
         role_code_accountant = excluded.role_code_accountant,
         role_code_seller = excluded.role_code_seller,
-        role_codes_hashed = true
+        role_codes_hashed = true,
+        role_pin_version = app_settings.role_pin_version + 1
     `;
-    return { ok: true as const };
+    // SEC-04: all role sessions issued with the old PINs stop working. The
+    // person who made the change keeps their role with a fresh token.
+    await forgetCachedRolePinVersion(context.userId);
+    const slot = peekSessionRole();
+    if (!slot) return { ok: true as const, roleToken: null };
+    const { signRoleToken, setRoleCookie } = await import("@/lib/auth/session-role.server");
+    const roleToken = signRoleToken(context.userId, slot.role, slot.displayName, await getRolePinVersion(sql, context.userId));
+    await setRoleCookie(roleToken);
+    return { ok: true as const, roleToken };
   });
 
 export const addStaffUser = createServerFn({ method: "POST" })

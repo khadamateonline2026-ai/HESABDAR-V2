@@ -787,7 +787,9 @@ function SecurityCard({
           {manageCodes ? (
             <Button
               onClick={async () => {
-                await saveRoleCodes({ data: codes });
+                const saved = await saveRoleCodes({ data: codes });
+                // SEC-04: old role sessions are revoked; keep this one with its fresh token.
+                if (saved.roleToken) setRoleToken(saved.roleToken);
                 await queryClient.invalidateQueries({ queryKey: ["bootstrap"] });
                 toast.success("کدها ذخیره شد");
               }}

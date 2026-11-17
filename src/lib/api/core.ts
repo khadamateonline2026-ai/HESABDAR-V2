@@ -4,7 +4,7 @@ import { authMiddleware } from "@/lib/auth/middleware";
 import { withTransaction } from "@/lib/db";
 import { DEFAULT_SETTINGS, type Role } from "@/lib/types";
 import { assertPinShape, hashPin } from "@/lib/auth/pin-hash";
-import { assertRoleNotLockedDb, attemptRoleSecret, verifyRolePin } from "./role-pin";
+import { assertRoleNotLockedDb, attemptRoleSecret, forgetCachedRolePinVersion, getRolePinVersion, verifyRolePin } from "./role-pin";
 import { resolveOnboardingIdentity } from "@/lib/auth/onboarding-identity";
 import { assertSafeImageDataUrl } from "@/lib/auth/image-dataurl";
 import {
@@ -131,7 +131,7 @@ export const completeOnboarding = createServerFn({ method: "POST" })
       rethrow(e);
     }
     const { signRoleToken, setRoleCookie } = await import("@/lib/auth/session-role.server");
-    const roleToken = signRoleToken(context.userId, "accountant", displayName);
+    const roleToken = signRoleToken(context.userId, "accountant", displayName, await getRolePinVersion(sql, context.userId));
     await setRoleCookie(roleToken);
     return { ok: true as const, roleToken };
   });
@@ -222,7 +222,7 @@ export const changeRole = createServerFn({ method: "POST" })
     const slot = peekSessionRole();
     const name = typedName || slot?.displayName || owner.displayName;
     const { signRoleToken, setRoleCookie } = await import("@/lib/auth/session-role.server");
-    const roleToken = signRoleToken(context.userId, data.role, name);
+    const roleToken = signRoleToken(context.userId, data.role, name, await getRolePinVersion(sql, context.userId));
     await setRoleCookie(roleToken);
     return { ok: true as const, roleToken };
   });
@@ -351,9 +351,11 @@ export const applyRoleResetLink = createServerFn({ method: "POST" })
     const hashed = hashPin(pin);
     const col = `role_code_${role}`;
     await sql.query(
-      `update app_settings set ${col} = $1, role_codes_hashed = true, role_reset_hash = null, role_reset_exp = null, role_fail_count = 0, role_lock_until = null where user_id = $2 and role_reset_hash = $3`,
+      `update app_settings set ${col} = $1, role_codes_hashed = true, role_reset_hash = null, role_reset_exp = null, role_fail_count = 0, role_lock_until = null, role_pin_version = role_pin_version + 1 where user_id = $2 and role_reset_hash = $3`,
       [hashed, row.user_id, h],
     );
+    // SEC-04: every role session issued before the reset is now invalid.
+    await forgetCachedRolePinVersion(row.user_id);
     return { ok: true as const, role: ROLE_FA[role] };
   });
 
@@ -393,8 +395,10 @@ export const applyRoleReset = createServerFn({ method: "POST" })
         role_reset_hash = null,
         role_reset_exp = null,
         role_fail_count = 0,
-        role_lock_until = null
+        role_lock_until = null,
+        role_pin_version = role_pin_version + 1
       where user_id = ${context.userId}
     `;
+    await forgetCachedRolePinVersion(context.userId);
     return { ok: true as const };
   });

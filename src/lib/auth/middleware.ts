@@ -1,4 +1,5 @@
 import { createMiddleware } from "@tanstack/react-start";
+import type { SessionRoleSlot } from "@/lib/session-role-slot";
 
 /**
  * Auth middleware for server functions — the standard way to get the caller's
@@ -51,7 +52,7 @@ export const authMiddleware = createMiddleware({ type: "function" })
     const userId = await requireUserId(context.bearerToken);
     // SEC-05: never run another user's queued offline write under this session.
     assertOfflineOwner(userId);
-    const { bindSessionRole, readRoleToken } = await import("./session-role.server");
+    const { bindSessionRole, readRoleToken, slotIfCurrent } = await import("./session-role.server");
     let roleToken = context.roleToken;
     if (!roleToken) {
       try {
@@ -62,6 +63,12 @@ export const authMiddleware = createMiddleware({ type: "function" })
         roleToken = undefined;
       }
     }
-    const slot = readRoleToken(roleToken, userId);
+    const claims = readRoleToken(roleToken, userId);
+    let slot: SessionRoleSlot | null = null;
+    if (claims) {
+      // SEC-04: a role PIN changed/reset since this token was issued -> drop it.
+      const { currentRolePinVersion } = await import("./role-version.server");
+      slot = slotIfCurrent(claims, await currentRolePinVersion(userId));
+    }
     return bindSessionRole(slot, () => next({ context: { userId } }));
   });

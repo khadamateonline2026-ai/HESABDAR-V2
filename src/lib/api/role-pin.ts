@@ -170,3 +170,17 @@ export async function verifyRolePin(
 export async function verifyAccountantPin(sql: Sql, userId: string, code: string): Promise<void> {
   await verifyRolePin(sql, userId, "accountant", code, "کد نقش حسابدار نادرست است");
 }
+
+/** SEC-04: current role-PIN version (bumped on every PIN change/reset). */
+export async function getRolePinVersion(sql: Sql, userId: string): Promise<number> {
+  const rows = await sql<{ role_pin_version: number | null }>`
+    select role_pin_version from app_settings where user_id = ${userId}
+  `;
+  return Number(rows[0]?.role_pin_version ?? 1) || 1;
+}
+
+/** SEC-04: after a PIN change on this instance, stop trusting the cached version. */
+export async function forgetCachedRolePinVersion(userId: string): Promise<void> {
+  const { forgetRolePinVersion } = await import("@/lib/auth/role-version.server");
+  forgetRolePinVersion(userId);
+}
