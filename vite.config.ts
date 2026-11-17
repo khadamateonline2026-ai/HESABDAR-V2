@@ -176,12 +176,6 @@ export default defineConfig(({ command, isPreview }) => ({
     strictPort: true,
   },
   resolve: { tsconfigPaths: true },
-  ssr: {
-    external: ["xlsx"],
-  },
-  optimizeDeps: {
-    include: ["xlsx"],
-  },
   plugins: [
     pgliteBootstrapPlugin(),
     pgliteNitroAssetsPlugin(),
