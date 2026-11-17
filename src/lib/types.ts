@@ -151,13 +151,6 @@ export type InventoryData = {
 
 export type ProductionStage = { id: number; name: string; sortOrder: number };
 
-export function isFirstStage(stages: ProductionStage[], stageId: number | null | undefined): boolean {
-  if (!stages.length) return true;
-  if (stageId == null) return false;
-  const min = Math.min(...stages.map((s) => s.sortOrder));
-  return stages.some((s) => s.id === stageId && s.sortOrder === min);
-}
-
 export function isLastStage(stages: ProductionStage[], stageId: number | null | undefined): boolean {
   if (!stages.length) return true;
   if (stageId == null) return true;

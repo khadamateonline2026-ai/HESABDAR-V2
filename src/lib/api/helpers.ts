@@ -709,23 +709,6 @@ export async function unmuteActivityLog(sql: Sql, _userId: string) {
   await sql`select set_config('hesabdar.mute_log', '', true)`;
 }
 
-export async function logActivity(
-  sql: Sql,
-  userId: string,
-  row: { area: string; action: string; title: string; detail?: string },
-) {
-  try {
-    const muted = await sql<{ m: string | null }>`select current_setting('hesabdar.mute_log', true) as m`;
-    if (muted[0]?.m === userId) return;
-    await sql`
-      insert into activity_log (user_id, area, action, title, detail)
-      values (${userId}, ${row.area}, ${row.action}, ${row.title}, ${row.detail ?? ""})
-    `;
-  } catch {
-    /* تاریخچه هرگز عملیات اصلی را خراب نمی‌کند */
-  }
-}
-
 export type RestoreOptions = {
   /** Must be RESTORE_CONFIRM ("replace-all"): a restore replaces ALL workspace data. */
   confirm?: string;

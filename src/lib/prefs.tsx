@@ -6,10 +6,6 @@ const CACHE_KEY = "dftar-appearance";
 
 export const PrefsProvider = PrefsContext.Provider;
 
-export function usePrefs(): AppSettings {
-  return useContext(PrefsContext);
-}
-
 export function useCalendarMode(): CalendarMode {
   return useContext(PrefsContext).calendar;
 }

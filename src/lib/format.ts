@@ -112,12 +112,6 @@ export function text(value: unknown): string {
   return value == null ? "" : String(value);
 }
 
-export function idOf(value: unknown): number | null {
-  if (value == null || value === "") return null;
-  const n = Number(value);
-  return Number.isFinite(n) ? n : null;
-}
-
 export function findAfn<T extends { name: string; symbol: string }>(currencies: T[]): T | undefined {
   return currencies.find((c) => c.symbol === "؋" || c.name === "افغانی") ?? currencies[0];
 }

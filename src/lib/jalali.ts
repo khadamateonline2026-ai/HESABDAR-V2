@@ -73,11 +73,6 @@ export function formatJalaliDisplay(iso: string): string {
   return `${pad(j.d)}-${pad(j.m)}-${j.y}`;
 }
 
-export function formatJalaliYmd(iso: string): string {
-  const j = gregorianToJalali(iso);
-  return `${j.y}-${pad(j.m)}-${pad(j.d)}`;
-}
-
 export function weekdayDari(iso: string): string {
   const { y, m, d } = parseIso(iso);
   const date = new Date(y, m - 1, d);
@@ -97,11 +92,6 @@ export function headerDateParts(iso: string): { jalali: string; gregorian: strin
     gregorian: isoToDisplay(iso),
     weekday: weekdayDari(iso),
   };
-}
-
-export function headerDateLine(iso: string): string {
-  const p = headerDateParts(iso);
-  return `${p.jalali}  ${p.gregorian}  ${p.weekday}`;
 }
 
 export function shiftJalaliMonths(iso: string, delta: number): string {

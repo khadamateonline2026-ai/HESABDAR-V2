@@ -41,11 +41,3 @@ export function CurrencyMatchNote({
   );
 }
 
-export function syncCurrencyToAccount(
-  accounts: Account[],
-  accountId: number | null,
-  setCurrency: (id: number | null) => void,
-) {
-  const a = accounts.find((x) => x.id === accountId);
-  if (a) setCurrency(a.currencyId);
-}

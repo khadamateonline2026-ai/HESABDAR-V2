@@ -1,5 +1,5 @@
 import { Link, Outlet, useRouterState } from "@tanstack/react-router";
-import { useMutation, useQuery } from "@tanstack/react-query";
+import { useQuery } from "@tanstack/react-query";
 import {
   BookOpen,
   ChevronDown,
@@ -364,12 +364,3 @@ export function useAppData() {
   });
 }
 
-export function useInvalidate() {
-  const m = useMutation({
-    mutationFn: async () => undefined,
-  });
-  return async () => {
-    await queryClient.invalidateQueries();
-    return m;
-  };
-}

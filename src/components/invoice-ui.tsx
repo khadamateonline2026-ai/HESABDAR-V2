@@ -11,8 +11,8 @@ import { Modal } from "@/components/ui/modal";
 import { saveAccount } from "@/lib/api/finance";
 import { queryClient } from "@/lib/query-client";
 import { cn } from "@/lib/utils";
-import { convertAmount, formatMoney, formatMoneyInt, parseAmount, rateToBaseOf } from "@/lib/format";
-import type { Account, Item, Named } from "@/lib/types";
+import { formatMoney, formatMoneyInt, parseAmount } from "@/lib/format";
+import type { Item, Named } from "@/lib/types";
 
 export function AfAmount({
   value,
@@ -576,144 +576,6 @@ export function InvoiceBrand({
   );
 }
 
-export function InvoiceTotals({
-  total,
-  totalBase,
-  paid,
-  paidLabel,
-  onPaid,
-  remaining,
-  remainingBase,
-  fx,
-  fxRate,
-  currencySymbol,
-  accountId,
-  accountName,
-  accounts,
-  onAccount,
-  view,
-  currencies,
-  invoiceCurrencyId,
-  accountLabel = "از حساب",
-  exportExcludeAccount,
-  paidRate,
-  paidSymbol,
-  paidExtra,
-}: {
-  total: number;
-  totalBase: number;
-  paid: string;
-  paidLabel: string;
-  onPaid: (v: string) => void;
-  remaining: number;
-  remainingBase: number;
-  fx: boolean;
-  fxRate: number;
-  currencySymbol?: string;
-  accountId: number | null;
-  accountName?: string;
-  accounts: Account[];
-  onAccount: (id: number | null) => void;
-  view?: boolean;
-  currencies?: { id: number; rateToBase: number; symbol: string }[];
-  invoiceCurrencyId?: number | null;
-  accountLabel?: string;
-  exportExcludeAccount?: boolean;
-  paidRate?: number;
-  paidSymbol?: string;
-  paidExtra?: ReactNode;
-}) {
-  const [addAcc, setAddAcc] = useState(false);
-  const paidN = parseAmount(paid);
-  const usePaidRate = paidRate != null && paidRate > 0;
-  const paidBase = paidN * (usePaidRate ? paidRate : fx ? fxRate : 1);
-  const cur = usePaidRate ? paidSymbol ?? "" : fx ? currencySymbol ?? "" : "";
-  const acc = accounts.find((a) => a.id === accountId);
-  const mismatch = Boolean(
-    !usePaidRate && acc && invoiceCurrencyId != null && acc.currencyId !== invoiceCurrencyId && paidN > 0,
-  );
-  const equiv =
-    mismatch && acc && currencies
-      ? convertAmount(paidN, fx ? fxRate : rateToBaseOf(currencies, invoiceCurrencyId), rateToBaseOf(currencies, acc.currencyId))
-      : 0;
-  return (
-    <div className="space-y-1.5">
-      <TripleRow
-        label="جمع کل"
-        mid={<AfAmount value={totalBase} size="sm" />}
-        left={
-          fx ? (
-            <span className="tabular-nums text-sm whitespace-nowrap">
-              {formatMoney(total)} {cur}
-            </span>
-          ) : null
-        }
-      />
-      <TripleRow
-        label={paidLabel}
-        mid={fx || usePaidRate ? <AfAmount value={paidBase} size="sm" /> : null}
-        left={
-          view ? (
-            <span className="tabular-nums text-sm whitespace-nowrap">
-              {formatMoney(paidN)} {cur}
-            </span>
-          ) : (
-            <MoneyInput value={paid} onChange={onPaid} className="h-10 w-full text-sm" />
-          )
-        }
-      />
-      {paidExtra}
-      <div className={"space-y-1" + (exportExcludeAccount ? " no-print export-exclude" : "")}>
-        <span className="block text-2xs text-muted whitespace-nowrap">{accountLabel}</span>
-        {view ? (
-          <p className="text-sm whitespace-nowrap">{accountName || acc?.name || ""}</p>
-        ) : (
-          <EntitySelect
-            value={accountId}
-            placeholder=""
-            options={accounts.map((a) => ({ id: a.id, label: `${a.name} (${a.currencySymbol})` }))}
-            onChange={(id) => onAccount(id == null ? null : Number(id))}
-            onAdd={() => setAddAcc(true)}
-          />
-        )}
-      </div>
-      {addAcc ? (
-        <AccountFormModal
-          onClose={() => setAddAcc(false)}
-          onSaved={(id) => {
-            onAccount(id);
-            setAddAcc(false);
-          }}
-        />
-      ) : null}
-      {mismatch && acc ? (
-        <p
-          className={
-            "rounded-sm border border-danger/50 bg-danger-soft px-3 py-2 text-2xs text-danger" +
-            (exportExcludeAccount ? " no-print export-exclude" : "")
-          }
-        >
-          ارز فاکتور با ارز دخل «{acc.name}» یکسان نیست. معادل ثبت در دخل:{" "}
-          <span className="tabular-nums" dir="ltr">
-            {formatMoney(equiv)} {acc.currencySymbol}
-          </span>
-        </p>
-      ) : null}
-      <TripleRow
-        label="باقی‌مانده"
-        mid={<AfAmount value={remainingBase} size="sm" />}
-        left={
-          fx ? (
-            <span className="tabular-nums text-sm whitespace-nowrap">
-              {formatMoney(remaining)} {cur}
-            </span>
-          ) : null
-        }
-      />
-    </div>
-  );
-}
-
 export function AccountFormModal({
   onClose,
   onSaved,
@@ -774,16 +636,6 @@ export function AccountFormModal({
         </Button>
       </form>
     </Modal>
-  );
-}
-
-function TripleRow({ label, mid, left }: { label: string; mid?: ReactNode; left?: ReactNode }) {
-  return (
-    <div className="space-y-1">
-      <span className="block text-2xs text-muted whitespace-nowrap">{label}</span>
-      {left ? <div>{left}</div> : null}
-      {mid ? <div>{mid}</div> : null}
-    </div>
   );
 }
 
