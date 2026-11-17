@@ -1,3 +1,4 @@
+import "@/lib/testing/test-env";
 import assert from "node:assert/strict";
 import test from "node:test";
 import { toCsv } from "./backup-snapshot.ts";
