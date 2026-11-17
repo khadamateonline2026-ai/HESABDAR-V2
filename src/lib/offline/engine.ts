@@ -1,4 +1,5 @@
-import { CONFLICT_USER_MESSAGE } from "@/lib/offline/conflict-policy";
+import { CONFLICT_USER_MESSAGE, entityKey, supersedes } from "@/lib/offline/queue-policy";
+import { OFFLINE_OP_HEADER, newOpKey } from "@/lib/offline/op-key";
 import { queryClient } from "@/lib/query-client";
 import { OFFLINE_OWNER_HEADER, mustWipe, partitionQueue, previousOwner } from "@/lib/offline/owner-policy";
 
@@ -20,6 +21,8 @@ type Row = {
   superseded: boolean;
   /** SEC-05: user id that queued this write; replayed only for that user. */
   owner?: string | null;
+  /** STR-04: idempotency key, identical on the first send and every replay. */
+  opKey?: string;
 };
 
 type Cached = {
@@ -191,7 +194,7 @@ function txDone(tx: IDBTransaction) {
   });
 }
 
-async function putQueue(row: Omit<Row, "id">) {
+async function putQueue(row: Omit<Row, "id">): Promise<number> {
   const db = await openDb();
   const tx = db.transaction(QUEUE, "readwrite");
   const store = tx.objectStore(QUEUE);
@@ -201,12 +204,20 @@ async function putQueue(row: Omit<Row, "id">) {
     r.onerror = () => reject(r.error);
   });
   for (const old of existing) {
-    if (!old.superseded && old.key === row.key && old.key.includes("#id:")) {
+    if (supersedes(old, row)) {
       old.superseded = true;
       store.put(old);
     }
   }
-  store.add(row);
+  const added = store.add(row);
+  await txDone(tx);
+  return added.result as number;
+}
+
+async function updateQueue(row: Row) {
+  const db = await openDb();
+  const tx = db.transaction(QUEUE, "readwrite");
+  tx.objectStore(QUEUE).put(row);
   await txDone(tx);
 }
 
@@ -290,12 +301,6 @@ async function cachedGet(url: string) {
   return new Response(row.body, { status: row.status, headers });
 }
 
-function entityKey(url: string, body: string) {
-  const id = /"id"\s*:\s*(\d+)/.exec(body)?.[1];
-  const fn = url.split("/").pop() || url;
-  return id ? `${fn}#id:${id}` : `${fn}#new:${Date.now()}:${Math.random()}`;
-}
-
 function fakeOk() {
   return new Response(JSON.stringify({ ok: true, offline: true }), {
     status: 200,
@@ -329,7 +334,13 @@ async function flush() {
         warning = "نسخه جدیدتر محلی ماند و نسخه قدیمی‌تر فرستاده نشد";
         continue;
       }
+      // Rows queued before STR-04 get a key now, kept for every later retry.
+      if (!row.opKey) {
+        row.opKey = newOpKey();
+        await updateQueue(row);
+      }
       const headers = new Headers(row.headers);
+      headers.set(OFFLINE_OP_HEADER, row.opKey);
       headers.set("x-hesabdar-replay", "1");
       headers.set(OFFLINE_OWNER_HEADER, owner);
       let res: Response;
@@ -411,14 +422,16 @@ async function offlineFetch(input: RequestInfo | URL, init?: RequestInit) {
       headers.push([key, value]);
     }
   });
-  await putQueue({
+  const opKey = newOpKey();
+  const rowId = await putQueue({
     url,
     body,
     headers,
     clientAt: Date.now(),
-    key: entityKey(url, body),
+    key: entityKey(url.split("?")[0].split("/").pop() || url, `${serverFnExport(url)}|${url}`, body, opKey),
     superseded: false,
     owner: queuedFor,
+    opKey,
   });
   emit({ pending: await countPending() });
 
@@ -426,14 +439,12 @@ async function offlineFetch(input: RequestInfo | URL, init?: RequestInit) {
   try {
     const res = await native(url, {
       method: "POST",
-      headers: [...headers, [OFFLINE_OWNER_HEADER, queuedFor]],
+      headers: [...headers, [OFFLINE_OWNER_HEADER, queuedFor], [OFFLINE_OP_HEADER, opKey]],
       body,
       credentials: "include",
     });
     if (res.ok) {
-      const rows = await listQueue();
-      const mine = rows.filter((r) => !r.superseded && r.url === url && r.body === body);
-      for (const row of mine) await deleteQueue(row.id);
+      await deleteQueue(rowId);
       emit({ pending: await countPending(), phase: "online" });
       void queryClient.invalidateQueries({ queryKey: ["inventory"] });
       void queryClient.invalidateQueries({ queryKey: ["dashboard"] });
@@ -442,9 +453,7 @@ async function offlineFetch(input: RequestInfo | URL, init?: RequestInit) {
     const failed = res.clone();
     const text = await res.clone().text().catch(() => "");
     if (res.status >= 400 && res.status < 500 && res.status !== 409) {
-      const rows = await listQueue();
-      const mine = rows.filter((r) => r.url === url && r.body === body);
-      for (const row of rows.filter((r) => mine.includes(r))) await deleteQueue(row.id);
+      await deleteQueue(rowId);
       emit({ pending: await countPending() });
     } else if (/جدیدتر|conflict/i.test(text)) {
       emit({ warning: "نسخه جدیدتر سرور ماند" });

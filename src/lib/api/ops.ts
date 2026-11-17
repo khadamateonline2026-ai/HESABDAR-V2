@@ -6,6 +6,7 @@ import { parseCadence, parseDueAnchor } from "@/lib/types";
 import { withTransaction, type Sql } from "@/lib/db";
 import { docStatusOf, guard, invoiceOf, itemKindOf, loadCatalogs, sqlOf, assertAccountantPin } from "./helpers";
 import { assertOwned } from "./ownership";
+import { idempotent } from "./idempotency";
 
 async function settleExpenseAccount(
   sql: Sql,
@@ -112,41 +113,47 @@ export const savePurchase = createServerFn({ method: "POST" })
       notes: string;
     }) => d,
   )
-  .handler(async ({ context, data }) => {
-    const { sql } = await guard(context.userId, "purchase");
-    await assertOwned(sql, context.userId, [
-      ["parties", data.vendorId],
-      ["items", data.itemId],
-      ["units", data.unitId],
-      ["currencies", data.currencyId],
-      ["accounts", data.accountId],
-    ]);
-    if (data.id) {
-      await sql`
-        update purchases set
-          vendor_id = ${data.vendorId}, item_id = ${data.itemId}, item_name = ${data.itemName},
-          quantity = ${data.quantity}, unit_id = ${data.unitId}, unit_price = ${data.unitPrice},
-          currency_id = ${data.currencyId}, account_id = ${data.accountId}, warehouse_name = ${data.warehouseName},
-          occurred_on = ${data.occurredOn}, notes = ${data.notes}
-        where id = ${data.id} and user_id = ${context.userId}
-      `;
-      return { id: data.id };
-    }
-    const rows = await sql<{ id: number }>`
-      insert into purchases (
-        user_id, vendor_id, item_id, item_name, quantity, unit_id, unit_price, currency_id,
-        account_id, warehouse_name, occurred_on, notes, status
-      ) values (
-        ${context.userId}, ${data.vendorId}, ${data.itemId}, ${data.itemName}, ${data.quantity}, ${data.unitId},
-        ${data.unitPrice}, ${data.currencyId}, ${data.accountId}, ${data.warehouseName}, ${data.occurredOn}, ${data.notes},
-        ${"final"}
-      ) returning id
-    `;
-    const id = rows[0].id;
-    const invoice = `خرید-${id}`;
-    await sql`update purchases set invoice_no = ${invoice} where id = ${id} and user_id = ${context.userId}`;
-    return { id };
-  });
+  .handler(async ({ context, data }) =>
+    // STR-04: a replayed offline save returns its first result.
+    idempotent(context.userId, async () => {
+      const { sql } = await guard(context.userId, "purchase");
+      await assertOwned(sql, context.userId, [
+        ["parties", data.vendorId],
+        ["items", data.itemId],
+        ["units", data.unitId],
+        ["currencies", data.currencyId],
+        ["accounts", data.accountId],
+      ]);
+      // STR-04: one transaction, so the offline idempotency key commits with the write
+      return withTransaction(async (sql) => {
+        if (data.id) {
+          await sql`
+            update purchases set
+              vendor_id = ${data.vendorId}, item_id = ${data.itemId}, item_name = ${data.itemName},
+              quantity = ${data.quantity}, unit_id = ${data.unitId}, unit_price = ${data.unitPrice},
+              currency_id = ${data.currencyId}, account_id = ${data.accountId}, warehouse_name = ${data.warehouseName},
+              occurred_on = ${data.occurredOn}, notes = ${data.notes}
+            where id = ${data.id} and user_id = ${context.userId}
+          `;
+          return { id: data.id };
+        }
+        const rows = await sql<{ id: number }>`
+          insert into purchases (
+            user_id, vendor_id, item_id, item_name, quantity, unit_id, unit_price, currency_id,
+            account_id, warehouse_name, occurred_on, notes, status
+          ) values (
+            ${context.userId}, ${data.vendorId}, ${data.itemId}, ${data.itemName}, ${data.quantity}, ${data.unitId},
+            ${data.unitPrice}, ${data.currencyId}, ${data.accountId}, ${data.warehouseName}, ${data.occurredOn}, ${data.notes},
+            ${"final"}
+          ) returning id
+        `;
+        const id = rows[0].id;
+        const invoice = `خرید-${id}`;
+        await sql`update purchases set invoice_no = ${invoice} where id = ${id} and user_id = ${context.userId}`;
+        return { id };
+      });
+    }),
+  );
 
 export const deletePurchase = createServerFn({ method: "POST" })
   .middleware([authMiddleware])
@@ -215,39 +222,45 @@ export const saveSale = createServerFn({ method: "POST" })
       notes: string;
     }) => d,
   )
-  .handler(async ({ context, data }) => {
-    const { sql } = await guard(context.userId, "sales");
-    await assertOwned(sql, context.userId, [
-      ["parties", data.customerId],
-      ["items", data.itemId],
-      ["units", data.unitId],
-      ["currencies", data.currencyId],
-      ["accounts", data.accountId],
-    ]);
-    if (data.id) {
-      await sql`
-        update sales set
-          customer_id = ${data.customerId}, item_id = ${data.itemId}, item_name = ${data.itemName},
-          quantity = ${data.quantity}, unit_id = ${data.unitId}, unit_price = ${data.unitPrice},
-          currency_id = ${data.currencyId}, account_id = ${data.accountId},
-          occurred_on = ${data.occurredOn}, notes = ${data.notes}
-        where id = ${data.id} and user_id = ${context.userId}
-      `;
-      return { id: data.id };
-    }
-    const rows = await sql<{ id: number }>`
-      insert into sales (
-        user_id, customer_id, item_id, item_name, quantity, unit_id, unit_price, currency_id, account_id, occurred_on, notes, status
-      ) values (
-        ${context.userId}, ${data.customerId}, ${data.itemId}, ${data.itemName}, ${data.quantity}, ${data.unitId},
-        ${data.unitPrice}, ${data.currencyId}, ${data.accountId}, ${data.occurredOn}, ${data.notes}, ${"final"}
-      ) returning id
-    `;
-    const id = rows[0].id;
-    const invoice = `فروش-${id}`;
-    await sql`update sales set invoice_no = ${invoice} where id = ${id} and user_id = ${context.userId}`;
-    return { id };
-  });
+  .handler(async ({ context, data }) =>
+    // STR-04: a replayed offline save returns its first result.
+    idempotent(context.userId, async () => {
+      const { sql } = await guard(context.userId, "sales");
+      await assertOwned(sql, context.userId, [
+        ["parties", data.customerId],
+        ["items", data.itemId],
+        ["units", data.unitId],
+        ["currencies", data.currencyId],
+        ["accounts", data.accountId],
+      ]);
+      // STR-04: one transaction, so the offline idempotency key commits with the write
+      return withTransaction(async (sql) => {
+        if (data.id) {
+          await sql`
+            update sales set
+              customer_id = ${data.customerId}, item_id = ${data.itemId}, item_name = ${data.itemName},
+              quantity = ${data.quantity}, unit_id = ${data.unitId}, unit_price = ${data.unitPrice},
+              currency_id = ${data.currencyId}, account_id = ${data.accountId},
+              occurred_on = ${data.occurredOn}, notes = ${data.notes}
+            where id = ${data.id} and user_id = ${context.userId}
+          `;
+          return { id: data.id };
+        }
+        const rows = await sql<{ id: number }>`
+          insert into sales (
+            user_id, customer_id, item_id, item_name, quantity, unit_id, unit_price, currency_id, account_id, occurred_on, notes, status
+          ) values (
+            ${context.userId}, ${data.customerId}, ${data.itemId}, ${data.itemName}, ${data.quantity}, ${data.unitId},
+            ${data.unitPrice}, ${data.currencyId}, ${data.accountId}, ${data.occurredOn}, ${data.notes}, ${"final"}
+          ) returning id
+        `;
+        const id = rows[0].id;
+        const invoice = `فروش-${id}`;
+        await sql`update sales set invoice_no = ${invoice} where id = ${id} and user_id = ${context.userId}`;
+        return { id };
+      });
+    }),
+  );
 
 export const deleteSale = createServerFn({ method: "POST" })
   .middleware([authMiddleware])

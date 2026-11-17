@@ -8,6 +8,7 @@ import type { Item, ModelSummary, PartyPayment, PartySummary, PurchaseLedgerRow,
 import { withTransaction, type Sql } from "@/lib/db";
 import { deleteLinkedPayment, loadLinkedPayment, updateLinkedPayment } from "./linked-payment";
 import { assertOwned } from "./ownership";
+import { idempotent } from "./idempotency";
 
 function inRange(iso: string, from?: string | null, to?: string | null): boolean {
   if (from && iso < from) return false;
@@ -872,140 +873,143 @@ export const savePartyPayment = createServerFn({ method: "POST" })
       notes: string;
     }) => d,
   )
-  .handler(async ({ context, data }) => {
-    await guard(context.userId, "payments");
-    if (data.amount <= 0) throw new Error("مبلغ باید بزرگ‌تر از صفر باشد");
-    // STR-03: balance check, the write and the receipt number (and a linked invoice header, ACC-03) are one transaction; the paying account is locked during the check.
-    return withTransaction(async (sql) => {
-      const ownCash = accountIdFromCashOption(data.partyId);
-      await assertOwned(sql, context.userId, [
-        ["accounts", ownCash],
-        ["parties", ownCash == null ? data.partyId : null],
-        ["accounts", data.accountId],
-        ["currencies", data.currencyId],
-        ["party_payments", data.id && data.id > 0 ? data.id : null],
-        ["transfers", data.id && data.id < 0 ? -data.id : null],
-      ]);
-      const catalogs = await loadCatalogs(sql, context.userId);
-      const storedRate = data.fxRate && data.fxRate > 1e-12
-        ? data.fxRate
-        : catalogs.currencies.find((c) => c.id === data.currencyId)?.rateToBase || 1;
-      const cashAccountId = accountIdFromCashOption(data.partyId);
-      if (cashAccountId != null) {
-        if (!data.accountId || data.accountId === cashAccountId) throw new Error("حساب دخل را انتخاب کنید");
-        const fromId = data.kind === "receipt" ? cashAccountId : data.accountId;
-        const toId = data.kind === "receipt" ? data.accountId : cashAccountId;
-        const fromAcc = catalogs.accounts.find((a) => a.id === fromId);
-        const fromRate = catalogs.currencies.find((c) => c.id === fromAcc?.currencyId)?.rateToBase || 1;
-        const xferAmount = convertAmount(data.amount, storedRate, fromRate);
-        const transferId = data.id != null && data.id < 0 ? -data.id : 0;
-        await sql`select id from accounts where id = ${fromId} and user_id = ${context.userId} for update`;
-        let creditBack = 0;
-        if (transferId) {
-          const old = await sql<{ from_account_id: number; amount: unknown }>`
-            select from_account_id, amount from transfers where id = ${transferId} and user_id = ${context.userId}
+  .handler(async ({ context, data }) =>
+    // STR-04: a replayed offline save returns its first result.
+    idempotent(context.userId, async () => {
+      await guard(context.userId, "payments");
+      if (data.amount <= 0) throw new Error("مبلغ باید بزرگ‌تر از صفر باشد");
+      // STR-03: balance check, the write and the receipt number (and a linked invoice header, ACC-03) are one transaction; the paying account is locked during the check.
+      return withTransaction(async (sql) => {
+        const ownCash = accountIdFromCashOption(data.partyId);
+        await assertOwned(sql, context.userId, [
+          ["accounts", ownCash],
+          ["parties", ownCash == null ? data.partyId : null],
+          ["accounts", data.accountId],
+          ["currencies", data.currencyId],
+          ["party_payments", data.id && data.id > 0 ? data.id : null],
+          ["transfers", data.id && data.id < 0 ? -data.id : null],
+        ]);
+        const catalogs = await loadCatalogs(sql, context.userId);
+        const storedRate = data.fxRate && data.fxRate > 1e-12
+          ? data.fxRate
+          : catalogs.currencies.find((c) => c.id === data.currencyId)?.rateToBase || 1;
+        const cashAccountId = accountIdFromCashOption(data.partyId);
+        if (cashAccountId != null) {
+          if (!data.accountId || data.accountId === cashAccountId) throw new Error("حساب دخل را انتخاب کنید");
+          const fromId = data.kind === "receipt" ? cashAccountId : data.accountId;
+          const toId = data.kind === "receipt" ? data.accountId : cashAccountId;
+          const fromAcc = catalogs.accounts.find((a) => a.id === fromId);
+          const fromRate = catalogs.currencies.find((c) => c.id === fromAcc?.currencyId)?.rateToBase || 1;
+          const xferAmount = convertAmount(data.amount, storedRate, fromRate);
+          const transferId = data.id != null && data.id < 0 ? -data.id : 0;
+          await sql`select id from accounts where id = ${fromId} and user_id = ${context.userId} for update`;
+          let creditBack = 0;
+          if (transferId) {
+            const old = await sql<{ from_account_id: number; amount: unknown }>`
+              select from_account_id, amount from transfers where id = ${transferId} and user_id = ${context.userId}
+            `;
+            if (old[0] && num(old[0].from_account_id) === fromId) creditBack = num(old[0].amount);
+          }
+          await assertCashAvailable(sql, context.userId, {
+            accountId: fromId,
+            amount: xferAmount,
+            amountRate: fromRate,
+            creditBack,
+          });
+          if (transferId) {
+            await sql`
+              update transfers
+              set from_account_id = ${fromId}, to_account_id = ${toId},
+                  amount = ${xferAmount}, occurred_on = ${data.occurredOn}, notes = ${data.notes}
+              where id = ${transferId} and user_id = ${context.userId}
+            `;
+            return { id: -transferId };
+          }
+          const rows = await sql<{ id: number }>`
+            insert into transfers (user_id, from_account_id, to_account_id, amount, occurred_on, notes)
+            values (${context.userId}, ${fromId}, ${toId}, ${xferAmount}, ${data.occurredOn}, ${data.notes})
+            returning id
           `;
-          if (old[0] && num(old[0].from_account_id) === fromId) creditBack = num(old[0].amount);
+          return { id: -rows[0].id };
         }
-        await assertCashAvailable(sql, context.userId, {
-          accountId: fromId,
-          amount: xferAmount,
-          amountRate: fromRate,
-          creditBack,
-        });
-        if (transferId) {
-          await sql`
-            update transfers
-            set from_account_id = ${fromId}, to_account_id = ${toId},
-                amount = ${xferAmount}, occurred_on = ${data.occurredOn}, notes = ${data.notes}
-            where id = ${transferId} and user_id = ${context.userId}
-          `;
-          return { id: -transferId };
+        // ACC-03: a row created by an invoice is edited together with that invoice.
+        const linked = data.id && data.id > 0 ? await loadLinkedPayment(sql, context.userId, data.id) : null;
+        if (data.kind === "payment") {
+          if (data.accountId) {
+            await sql`select id from accounts where id = ${data.accountId} and user_id = ${context.userId} for update`;
+          }
+          let creditBack = 0;
+          if (data.id) {
+            const old = await sql<{
+              account_id: number | null;
+              amount: unknown;
+              currency_id: number;
+              kind: string;
+              fx_rate: unknown;
+              account_rate: unknown;
+            }>`
+              select account_id, amount, currency_id, kind, fx_rate, account_rate from party_payments
+              where id = ${data.id} and user_id = ${context.userId}
+            `;
+            if (old[0] && old[0].kind === "payment" && old[0].account_id != null && data.accountId === num(old[0].account_id)) {
+              const acc = catalogs.accounts.find((a) => a.id === data.accountId);
+              // ACC-01: frozen account rate, so the credit-back matches the balance.
+              const accRate =
+                num(old[0].account_rate) > 0
+                  ? num(old[0].account_rate)
+                  : catalogs.currencies.find((c) => c.id === acc?.currencyId)?.rateToBase || 1;
+              const oldRate =
+                num(old[0].fx_rate) > 1e-12
+                  ? num(old[0].fx_rate)
+                  : catalogs.currencies.find((c) => c.id === num(old[0].currency_id))?.rateToBase || 1;
+              creditBack = convertAmount(num(old[0].amount), oldRate, accRate);
+            }
+          }
+          await assertCashAvailable(sql, context.userId, {
+            accountId: data.accountId,
+            amount: data.amount,
+            amountRate: storedRate,
+            creditBack,
+          });
         }
-        const rows = await sql<{ id: number }>`
-          insert into transfers (user_id, from_account_id, to_account_id, amount, occurred_on, notes)
-          values (${context.userId}, ${fromId}, ${toId}, ${xferAmount}, ${data.occurredOn}, ${data.notes})
-          returning id
-        `;
-        return { id: -rows[0].id };
-      }
-      // ACC-03: a row created by an invoice is edited together with that invoice.
-      const linked = data.id && data.id > 0 ? await loadLinkedPayment(sql, context.userId, data.id) : null;
-      if (data.kind === "payment") {
-        if (data.accountId) {
-          await sql`select id from accounts where id = ${data.accountId} and user_id = ${context.userId} for update`;
+        if (linked) {
+          await updateLinkedPayment(sql, context.userId, linked, {
+            partyId: data.partyId,
+            kind: data.kind,
+            amount: data.amount,
+            currencyId: data.currencyId,
+            fxRate: storedRate,
+            accountId: data.accountId,
+            occurredOn: data.occurredOn,
+            notes: data.notes,
+          });
+          return { id: linked.id };
         }
-        let creditBack = 0;
         if (data.id) {
-          const old = await sql<{
-            account_id: number | null;
-            amount: unknown;
-            currency_id: number;
-            kind: string;
-            fx_rate: unknown;
-            account_rate: unknown;
-          }>`
-            select account_id, amount, currency_id, kind, fx_rate, account_rate from party_payments
+          await sql`
+            update party_payments set
+              party_id = ${data.partyId}, kind = ${data.kind}, amount = ${data.amount},
+              currency_id = ${data.currencyId}, fx_rate = ${storedRate}, account_id = ${data.accountId},
+              occurred_on = ${data.occurredOn}, notes = ${data.notes}
             where id = ${data.id} and user_id = ${context.userId}
           `;
-          if (old[0] && old[0].kind === "payment" && old[0].account_id != null && data.accountId === num(old[0].account_id)) {
-            const acc = catalogs.accounts.find((a) => a.id === data.accountId);
-            // ACC-01: frozen account rate, so the credit-back matches the balance.
-            const accRate =
-              num(old[0].account_rate) > 0
-                ? num(old[0].account_rate)
-                : catalogs.currencies.find((c) => c.id === acc?.currencyId)?.rateToBase || 1;
-            const oldRate =
-              num(old[0].fx_rate) > 1e-12
-                ? num(old[0].fx_rate)
-                : catalogs.currencies.find((c) => c.id === num(old[0].currency_id))?.rateToBase || 1;
-            creditBack = convertAmount(num(old[0].amount), oldRate, accRate);
-          }
+          return { id: data.id };
         }
-        await assertCashAvailable(sql, context.userId, {
-          accountId: data.accountId,
-          amount: data.amount,
-          amountRate: storedRate,
-          creditBack,
-        });
-      }
-      if (linked) {
-        await updateLinkedPayment(sql, context.userId, linked, {
-          partyId: data.partyId,
-          kind: data.kind,
-          amount: data.amount,
-          currencyId: data.currencyId,
-          fxRate: storedRate,
-          accountId: data.accountId,
-          occurredOn: data.occurredOn,
-          notes: data.notes,
-        });
-        return { id: linked.id };
-      }
-      if (data.id) {
-        await sql`
-          update party_payments set
-            party_id = ${data.partyId}, kind = ${data.kind}, amount = ${data.amount},
-            currency_id = ${data.currencyId}, fx_rate = ${storedRate}, account_id = ${data.accountId},
-            occurred_on = ${data.occurredOn}, notes = ${data.notes}
-          where id = ${data.id} and user_id = ${context.userId}
+        const rows = await sql<{ id: number }>`
+          insert into party_payments (
+            user_id, party_id, kind, amount, currency_id, fx_rate, account_id, receipt_no, occurred_on, notes
+          ) values (
+            ${context.userId}, ${data.partyId}, ${data.kind}, ${data.amount}, ${data.currencyId}, ${storedRate}, ${data.accountId},
+            ${"موقت"}, ${data.occurredOn}, ${data.notes}
+          ) returning id
         `;
-        return { id: data.id };
-      }
-      const rows = await sql<{ id: number }>`
-        insert into party_payments (
-          user_id, party_id, kind, amount, currency_id, fx_rate, account_id, receipt_no, occurred_on, notes
-        ) values (
-          ${context.userId}, ${data.partyId}, ${data.kind}, ${data.amount}, ${data.currencyId}, ${storedRate}, ${data.accountId},
-          ${"موقت"}, ${data.occurredOn}, ${data.notes}
-        ) returning id
-      `;
-      const id = rows[0].id;
-      const receipt = `ق-${id}`;
-      await sql`update party_payments set receipt_no = ${receipt} where id = ${id} and user_id = ${context.userId}`;
-      return { id };
-    });
-  });
+        const id = rows[0].id;
+        const receipt = `ق-${id}`;
+        await sql`update party_payments set receipt_no = ${receipt} where id = ${id} and user_id = ${context.userId}`;
+        return { id };
+      });
+    }),
+  );
 
 export const deletePartyPayment = createServerFn({ method: "POST" })
   .middleware([authMiddleware])

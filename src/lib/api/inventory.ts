@@ -7,6 +7,7 @@ import { isLastStage } from "@/lib/types";
 import { loadInventoryState, requireWriteAny, sqlOf, assertUniqueItemName, wageForProduct, assertAccountantPin } from "./helpers";
 import { encodeUsageError, type UsageFocus } from "@/lib/usage-focus";
 import { assertOwned } from "./ownership";
+import { idempotent } from "./idempotency";
 
 async function snapshotWage(
   sql: Awaited<ReturnType<typeof sqlOf>>,
@@ -90,90 +91,96 @@ export const saveCatalogItem = createServerFn({ method: "POST" })
       overheads?: { title: string; amount: number }[];
     }) => d,
   )
-  .handler(async ({ context, data }) => {
-    const sql = await sqlOf();
-    await requireWriteAny(sql, context.userId, ["warehouses", "purchase", "sales"]);
-    await assertOwned(sql, context.userId, [
-      ["item_categories", data.categoryId],
-      ["units", data.unitId],
-      ...(data.bom ?? []).map((l) => ["items", l.rawItemId] as const),
-    ]);
-    const name = data.name.trim();
-    if (!name) throw new Error("نام لازم است");
-    const kind = data.kind === "raw" ? "raw" : "product";
-    const minQty = Math.max(0, data.minQty);
-    const salePrice = Math.max(0, data.salePrice ?? 0);
-    const purchasePrice = Math.max(0, data.purchasePrice ?? 0);
-    const notes = (data.notes ?? "").trim();
-    const bom = data.bom ?? [];
-    if (kind === "product") {
-      const seen = new Set<number>();
-      for (const line of bom) {
-        if (line.quantity <= 0) throw new Error("مقدار مواد خام در فرمول باید بزرگ‌تر از صفر باشد");
-        if (seen.has(line.rawItemId)) throw new Error("هر ماده خام فقط یک‌بار در فرمول می‌تواند باشد");
-        seen.add(line.rawItemId);
+  .handler(async ({ context, data }) =>
+    // STR-04: a replayed offline save returns its first result.
+    idempotent(context.userId, async () => {
+      const sql = await sqlOf();
+      await requireWriteAny(sql, context.userId, ["warehouses", "purchase", "sales"]);
+      await assertOwned(sql, context.userId, [
+        ["item_categories", data.categoryId],
+        ["units", data.unitId],
+        ...(data.bom ?? []).map((l) => ["items", l.rawItemId] as const),
+      ]);
+      const name = data.name.trim();
+      if (!name) throw new Error("نام لازم است");
+      const kind = data.kind === "raw" ? "raw" : "product";
+      const minQty = Math.max(0, data.minQty);
+      const salePrice = Math.max(0, data.salePrice ?? 0);
+      const purchasePrice = Math.max(0, data.purchasePrice ?? 0);
+      const notes = (data.notes ?? "").trim();
+      const bom = data.bom ?? [];
+      if (kind === "product") {
+        const seen = new Set<number>();
+        for (const line of bom) {
+          if (line.quantity <= 0) throw new Error("مقدار مواد خام در فرمول باید بزرگ‌تر از صفر باشد");
+          if (seen.has(line.rawItemId)) throw new Error("هر ماده خام فقط یک‌بار در فرمول می‌تواند باشد");
+          seen.add(line.rawItemId);
+        }
       }
-    }
-    let id = data.id;
-    await assertUniqueItemName(sql, context.userId, name, kind, id);
-    if (id) {
-      const row = await sql<{ id: number }>`
-        select id from items where id = ${id} and user_id = ${context.userId}
-      `;
-      if (!row[0]) throw new Error("کالا یافت نشد");
-      if (data.image === undefined) {
-        await sql`
-          update items set
-            name = ${name}, kind = ${kind}, category_id = ${data.categoryId},
-            unit_id = ${data.unitId}, min_qty = ${minQty}, sale_price = ${salePrice},
-            purchase_price = ${purchasePrice}, notes = ${notes}
-          where id = ${id} and user_id = ${context.userId}
-        `;
-      } else {
-        await sql`
-          update items set
-            name = ${name}, kind = ${kind}, category_id = ${data.categoryId},
-            unit_id = ${data.unitId}, min_qty = ${minQty}, sale_price = ${salePrice},
-            purchase_price = ${purchasePrice}, image = ${data.image}, notes = ${notes}
-          where id = ${id} and user_id = ${context.userId}
-        `;
-      }
-    } else {
-      const rows = await sql<{ id: number }>`
-        insert into items (user_id, name, kind, category_id, unit_id, min_qty, sale_price, purchase_price, image, notes)
-        values (
-          ${context.userId}, ${name}, ${kind}, ${data.categoryId}, ${data.unitId}, ${minQty}, ${salePrice},
-          ${purchasePrice}, ${data.image ?? null}, ${notes}
-        )
-        returning id
-      `;
-      id = rows[0].id;
-    }
-    if (kind === "product") {
-      await sql`delete from bom_lines where product_id = ${id} and user_id = ${context.userId}`;
-      for (const line of bom) {
-        const raw = await sql<{ id: number; kind: string }>`
-          select id, kind from items where id = ${line.rawItemId} and user_id = ${context.userId}
-        `;
-        if (!raw[0] || raw[0].kind !== "raw") throw new Error("ماده خام نامعتبر است");
-        await sql`
-          insert into bom_lines (user_id, product_id, raw_item_id, quantity)
-          values (${context.userId}, ${id}, ${line.rawItemId}, ${line.quantity})
-        `;
-      }
-      await sql`delete from item_overheads where item_id = ${id} and user_id = ${context.userId}`;
-      for (const row of data.overheads ?? []) {
-        const title = row.title.trim();
-        const amount = Math.max(0, row.amount);
-        if (!title || amount <= 0) continue;
-        await sql`
-          insert into item_overheads (user_id, item_id, title, amount)
-          values (${context.userId}, ${id}, ${title}, ${amount})
-        `;
-      }
-    }
-    return { id };
-  });
+      let id = data.id;
+      await assertUniqueItemName(sql, context.userId, name, kind, id);
+      // STR-04: one transaction, so the offline idempotency key commits with the write
+      return withTransaction(async (sql) => {
+        if (id) {
+          const row = await sql<{ id: number }>`
+            select id from items where id = ${id} and user_id = ${context.userId}
+          `;
+          if (!row[0]) throw new Error("کالا یافت نشد");
+          if (data.image === undefined) {
+            await sql`
+              update items set
+                name = ${name}, kind = ${kind}, category_id = ${data.categoryId},
+                unit_id = ${data.unitId}, min_qty = ${minQty}, sale_price = ${salePrice},
+                purchase_price = ${purchasePrice}, notes = ${notes}
+              where id = ${id} and user_id = ${context.userId}
+            `;
+          } else {
+            await sql`
+              update items set
+                name = ${name}, kind = ${kind}, category_id = ${data.categoryId},
+                unit_id = ${data.unitId}, min_qty = ${minQty}, sale_price = ${salePrice},
+                purchase_price = ${purchasePrice}, image = ${data.image}, notes = ${notes}
+              where id = ${id} and user_id = ${context.userId}
+            `;
+          }
+        } else {
+          const rows = await sql<{ id: number }>`
+            insert into items (user_id, name, kind, category_id, unit_id, min_qty, sale_price, purchase_price, image, notes)
+            values (
+              ${context.userId}, ${name}, ${kind}, ${data.categoryId}, ${data.unitId}, ${minQty}, ${salePrice},
+              ${purchasePrice}, ${data.image ?? null}, ${notes}
+            )
+            returning id
+          `;
+          id = rows[0].id;
+        }
+        if (kind === "product") {
+          await sql`delete from bom_lines where product_id = ${id} and user_id = ${context.userId}`;
+          for (const line of bom) {
+            const raw = await sql<{ id: number; kind: string }>`
+              select id, kind from items where id = ${line.rawItemId} and user_id = ${context.userId}
+            `;
+            if (!raw[0] || raw[0].kind !== "raw") throw new Error("ماده خام نامعتبر است");
+            await sql`
+              insert into bom_lines (user_id, product_id, raw_item_id, quantity)
+              values (${context.userId}, ${id}, ${line.rawItemId}, ${line.quantity})
+            `;
+          }
+          await sql`delete from item_overheads where item_id = ${id} and user_id = ${context.userId}`;
+          for (const row of data.overheads ?? []) {
+            const title = row.title.trim();
+            const amount = Math.max(0, row.amount);
+            if (!title || amount <= 0) continue;
+            await sql`
+              insert into item_overheads (user_id, item_id, title, amount)
+              values (${context.userId}, ${id}, ${title}, ${amount})
+            `;
+          }
+        }
+        return { id };
+      });
+    }),
+  );
 
 async function findItemUsage(
   sql: Awaited<ReturnType<typeof sqlOf>>,

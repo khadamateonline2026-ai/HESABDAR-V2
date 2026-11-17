@@ -15,6 +15,7 @@ import {
   sqlOf,
 } from "./helpers";
 import { assertOwned } from "./ownership";
+import { idempotent } from "./idempotency";
 
 type LineIn = {
   itemId: number | null;
@@ -203,112 +204,115 @@ export const savePurchaseInvoice = createServerFn({ method: "POST" })
       lines: LineIn[];
     }) => d,
   )
-  .handler(async ({ context, data }) => {
-    await guard(context.userId, "purchase");
-    const cleanLines = data.lines.filter((l) => l.itemName.trim() && l.quantity > 0);
-    if (!cleanLines.length) throw new Error("حداقل یک ردیف کالا لازم است");
-    for (let attempt = 0; attempt < 5; attempt++) {
-      try {
-        return await withTransaction(async (sql) => {
-          await assertOwned(sql, context.userId, [
-            ["parties", data.vendorId],
-            ["accounts", data.accountId],
-            ["currencies", data.currencyId],
-            ["purchase_invoices", data.id],
-            ...cleanLines.flatMap((l) => [["items", l.itemId] as const, ["units", l.unitId] as const]),
-          ]);
-    await assertPurchaseFunds(sql, context.userId, {
-      accountId: data.accountId,
-      paidAmount: data.paidAmount,
-      currencyId: data.currencyId,
-      fxEnabled: data.fxEnabled,
-      fxRate: data.fxRate,
-      invoiceId: data.id,
-    });
-    const rate = fxRate(data.fxEnabled, data.fxRate, 1);
-    let id = data.id;
-    let invoiceNo = "";
-    const oldLines = id
-      ? await sql<Record<string, unknown>>`
-          select id, item_name, received_qty, warehouse_name from purchases
-          where invoice_id = ${id} and user_id = ${context.userId}
-        `
-      : [];
-    if (id) {
-      const row = await sql<{ invoice_no: string }>`
-        select invoice_no from purchase_invoices where id = ${id} and user_id = ${context.userId}
-      `;
-      if (!row[0]) throw new Error("فاکتور یافت نشد");
-      invoiceNo = row[0].invoice_no;
+  .handler(async ({ context, data }) =>
+    // STR-04: a replayed offline save returns its first result.
+    idempotent(context.userId, async () => {
+      await guard(context.userId, "purchase");
+      const cleanLines = data.lines.filter((l) => l.itemName.trim() && l.quantity > 0);
+      if (!cleanLines.length) throw new Error("حداقل یک ردیف کالا لازم است");
+      for (let attempt = 0; attempt < 5; attempt++) {
+        try {
+          return await withTransaction(async (sql) => {
+            await assertOwned(sql, context.userId, [
+              ["parties", data.vendorId],
+              ["accounts", data.accountId],
+              ["currencies", data.currencyId],
+              ["purchase_invoices", data.id],
+              ...cleanLines.flatMap((l) => [["items", l.itemId] as const, ["units", l.unitId] as const]),
+            ]);
+      await assertPurchaseFunds(sql, context.userId, {
+        accountId: data.accountId,
+        paidAmount: data.paidAmount,
+        currencyId: data.currencyId,
+        fxEnabled: data.fxEnabled,
+        fxRate: data.fxRate,
+        invoiceId: data.id,
+      });
+      const rate = fxRate(data.fxEnabled, data.fxRate, 1);
+      let id = data.id;
+      let invoiceNo = "";
+      const oldLines = id
+        ? await sql<Record<string, unknown>>`
+            select id, item_name, received_qty, warehouse_name from purchases
+            where invoice_id = ${id} and user_id = ${context.userId}
+          `
+        : [];
+      if (id) {
+        const row = await sql<{ invoice_no: string }>`
+          select invoice_no from purchase_invoices where id = ${id} and user_id = ${context.userId}
+        `;
+        if (!row[0]) throw new Error("فاکتور یافت نشد");
+        invoiceNo = row[0].invoice_no;
+        await sql`
+          update purchase_invoices set
+            vendor_id = ${data.vendorId}, occurred_on = ${data.occurredOn}, expected_on = ${data.expectedOn || null},
+            currency_id = ${data.currencyId}, fx_enabled = ${data.fxEnabled}, fx_rate = ${rate},
+            paid_amount = ${data.paidAmount}, account_id = ${data.accountId}, notes = ${data.notes}
+          where id = ${id} and user_id = ${context.userId}
+        `;
+        await sql`delete from purchases where invoice_id = ${id} and user_id = ${context.userId}`;
+      } else {
+        invoiceNo = await allocInvoiceNo(sql, context.userId, "purchase_invoices", "B");
+        const rows = await sql<{ id: number }>`
+          insert into purchase_invoices (
+            user_id, vendor_id, invoice_no, occurred_on, expected_on, currency_id, fx_enabled, fx_rate,
+            paid_amount, account_id, notes, receive_status
+          ) values (
+            ${context.userId}, ${data.vendorId}, ${invoiceNo}, ${data.occurredOn}, ${data.expectedOn || null},
+            ${data.currencyId}, ${data.fxEnabled}, ${rate}, ${data.paidAmount}, ${data.accountId}, ${data.notes},
+            ${"in_transit"}
+          ) returning id
+        `;
+        id = rows[0].id;
+      }
+      if (!id) throw new Error("فاکتور ذخیره نشد");
+      let lineNo = 1;
+      const usedOld = new Set<number>();
+      let allArrived = cleanLines.length > 0;
+      for (const l of cleanLines) {
+        const name = l.itemName.trim();
+        const match = oldLines.find((o) => !usedOld.has(num(o.id)) && text(o.item_name) === name);
+        if (match) usedOld.add(num(match.id));
+        const rec = Math.min(l.quantity, match ? num(match.received_qty) : 0);
+        const wh = match ? text(match.warehouse_name) : "";
+        if (rec + 1e-9 < l.quantity) allArrived = false;
+        await sql`
+          insert into purchases (
+            user_id, vendor_id, item_id, item_name, quantity, received_qty, unit_id, unit_price, currency_id,
+            account_id, warehouse_name, occurred_on, notes, status, invoice_no, invoice_id, line_no
+          ) values (
+            ${context.userId}, ${data.vendorId}, ${l.itemId}, ${name}, ${l.quantity}, ${rec},
+            ${l.unitId}, ${l.unitPrice}, ${data.currencyId}, ${data.accountId}, ${wh}, ${data.occurredOn},
+            ${l.notes ?? ""}, ${"final"}, ${invoiceNo}, ${id}, ${lineNo}
+          )
+        `;
+        lineNo += 1;
+      }
+      const status: ReceiveStatus = allArrived && oldLines.length > 0 ? "arrived" : "in_transit";
       await sql`
-        update purchase_invoices set
-          vendor_id = ${data.vendorId}, occurred_on = ${data.occurredOn}, expected_on = ${data.expectedOn || null},
-          currency_id = ${data.currencyId}, fx_enabled = ${data.fxEnabled}, fx_rate = ${rate},
-          paid_amount = ${data.paidAmount}, account_id = ${data.accountId}, notes = ${data.notes}
+        update purchase_invoices set receive_status = ${status}
         where id = ${id} and user_id = ${context.userId}
       `;
-      await sql`delete from purchases where invoice_id = ${id} and user_id = ${context.userId}`;
-    } else {
-      invoiceNo = await allocInvoiceNo(sql, context.userId, "purchase_invoices", "B");
-      const rows = await sql<{ id: number }>`
-        insert into purchase_invoices (
-          user_id, vendor_id, invoice_no, occurred_on, expected_on, currency_id, fx_enabled, fx_rate,
-          paid_amount, account_id, notes, receive_status
-        ) values (
-          ${context.userId}, ${data.vendorId}, ${invoiceNo}, ${data.occurredOn}, ${data.expectedOn || null},
-          ${data.currencyId}, ${data.fxEnabled}, ${rate}, ${data.paidAmount}, ${data.accountId}, ${data.notes},
-          ${"in_transit"}
-        ) returning id
-      `;
-      id = rows[0].id;
-    }
-    if (!id) throw new Error("فاکتور ذخیره نشد");
-    let lineNo = 1;
-    const usedOld = new Set<number>();
-    let allArrived = cleanLines.length > 0;
-    for (const l of cleanLines) {
-      const name = l.itemName.trim();
-      const match = oldLines.find((o) => !usedOld.has(num(o.id)) && text(o.item_name) === name);
-      if (match) usedOld.add(num(match.id));
-      const rec = Math.min(l.quantity, match ? num(match.received_qty) : 0);
-      const wh = match ? text(match.warehouse_name) : "";
-      if (rec + 1e-9 < l.quantity) allArrived = false;
-      await sql`
-        insert into purchases (
-          user_id, vendor_id, item_id, item_name, quantity, received_qty, unit_id, unit_price, currency_id,
-          account_id, warehouse_name, occurred_on, notes, status, invoice_no, invoice_id, line_no
-        ) values (
-          ${context.userId}, ${data.vendorId}, ${l.itemId}, ${name}, ${l.quantity}, ${rec},
-          ${l.unitId}, ${l.unitPrice}, ${data.currencyId}, ${data.accountId}, ${wh}, ${data.occurredOn},
-          ${l.notes ?? ""}, ${"final"}, ${invoiceNo}, ${id}, ${lineNo}
-        )
-      `;
-      lineNo += 1;
-    }
-    const status: ReceiveStatus = allArrived && oldLines.length > 0 ? "arrived" : "in_transit";
-    await sql`
-      update purchase_invoices set receive_status = ${status}
-      where id = ${id} and user_id = ${context.userId}
-    `;
-    await syncLinkedPayment(sql, {
-      userId: context.userId,
-      kind: "payment",
-      partyId: data.vendorId,
-      amount: data.paidAmount,
-      currencyId: data.currencyId,
-      accountId: data.accountId,
-      occurredOn: data.occurredOn,
-      purchaseInvoiceId: id,
-      label: `پرداخت فاکتور ${invoiceNo}`,
-    });
-    return { id, invoiceNo };
-        });
-      } catch (err) {
-        if (data.id || attempt === 4 || !isUniqueViolation(err)) throw err;
+      await syncLinkedPayment(sql, {
+        userId: context.userId,
+        kind: "payment",
+        partyId: data.vendorId,
+        amount: data.paidAmount,
+        currencyId: data.currencyId,
+        accountId: data.accountId,
+        occurredOn: data.occurredOn,
+        purchaseInvoiceId: id,
+        label: `پرداخت فاکتور ${invoiceNo}`,
+      });
+      return { id, invoiceNo };
+          });
+        } catch (err) {
+          if (data.id || attempt === 4 || !isUniqueViolation(err)) throw err;
+        }
       }
-    }
-    throw new Error("فاکتور ذخیره نشد");
-  });
+      throw new Error("فاکتور ذخیره نشد");
+    }),
+  );
 
 export const deletePurchaseInvoice = createServerFn({ method: "POST" })
   .middleware([authMiddleware])
@@ -334,58 +338,61 @@ export const receivePurchaseInvoice = createServerFn({ method: "POST" })
       lines: { id: number; receivedQty: number; notes: string }[];
     }) => d,
   )
-  .handler(async ({ context, data }) => {
-    await guard(context.userId, "purchase");
-    // STR-03: line quantities, item categories and the invoice status change together; the invoice row is locked so two partial receives are applied one after the other.
-    return withTransaction(async (sql) => {
-      await assertOwned(sql, context.userId, [["item_categories", data.categoryId]]);
-      const header = await sql<{ id: number }>`
-        select id from purchase_invoices where id = ${data.id} and user_id = ${context.userId}
-        for update
-      `;
-      if (!header[0]) throw new Error("فاکتور یافت نشد");
-      const lines = await sql<{ id: number; quantity: unknown; received_qty: unknown; item_id: number | null }>`
-        select id, quantity, received_qty, item_id from purchases
-        where invoice_id = ${data.id} and user_id = ${context.userId}
-      `;
-      const wh = data.warehouseName.trim();
-      if (!wh) throw new Error("گدام را انتخاب کنید");
-      if (data.mode === "full") {
-        await sql`
-          update purchases set received_qty = quantity, warehouse_name = ${wh}
+  .handler(async ({ context, data }) =>
+    // STR-04: a replayed offline save returns its first result.
+    idempotent(context.userId, async () => {
+      await guard(context.userId, "purchase");
+      // STR-03: line quantities, item categories and the invoice status change together; the invoice row is locked so two partial receives are applied one after the other.
+      return withTransaction(async (sql) => {
+        await assertOwned(sql, context.userId, [["item_categories", data.categoryId]]);
+        const header = await sql<{ id: number }>`
+          select id from purchase_invoices where id = ${data.id} and user_id = ${context.userId}
+          for update
+        `;
+        if (!header[0]) throw new Error("فاکتور یافت نشد");
+        const lines = await sql<{ id: number; quantity: unknown; received_qty: unknown; item_id: number | null }>`
+          select id, quantity, received_qty, item_id from purchases
           where invoice_id = ${data.id} and user_id = ${context.userId}
         `;
-      } else {
-        for (const l of data.lines) {
-          const row = lines.find((x) => x.id === l.id);
-          if (!row) continue;
-          const prev = row.received_qty == null ? 0 : num(row.received_qty);
-          const next = Math.min(num(row.quantity), Math.max(0, prev + l.receivedQty));
+        const wh = data.warehouseName.trim();
+        if (!wh) throw new Error("گدام را انتخاب کنید");
+        if (data.mode === "full") {
           await sql`
-            update purchases set received_qty = ${next}, warehouse_name = ${wh}, notes = ${l.notes}
-            where id = ${l.id} and user_id = ${context.userId}
+            update purchases set received_qty = quantity, warehouse_name = ${wh}
+            where invoice_id = ${data.id} and user_id = ${context.userId}
           `;
-        }
-      }
-      if (data.categoryId) {
-        for (const l of lines) {
-          if (l.item_id) {
-            await sql`update items set category_id = ${data.categoryId} where id = ${l.item_id} and user_id = ${context.userId}`;
+        } else {
+          for (const l of data.lines) {
+            const row = lines.find((x) => x.id === l.id);
+            if (!row) continue;
+            const prev = row.received_qty == null ? 0 : num(row.received_qty);
+            const next = Math.min(num(row.quantity), Math.max(0, prev + l.receivedQty));
+            await sql`
+              update purchases set received_qty = ${next}, warehouse_name = ${wh}, notes = ${l.notes}
+              where id = ${l.id} and user_id = ${context.userId}
+            `;
           }
         }
-      }
-      const after = await sql<{ quantity: unknown; received_qty: unknown }>`
-        select quantity, received_qty from purchases where invoice_id = ${data.id} and user_id = ${context.userId}
-      `;
-      const arrived = after.every((l) => num(l.received_qty) + 1e-9 >= num(l.quantity));
-      const status: ReceiveStatus = arrived ? "arrived" : "in_transit";
-      await sql`
-        update purchase_invoices set receive_status = ${status}
-        where id = ${data.id} and user_id = ${context.userId}
-      `;
-      return { status };
-    });
-  });
+        if (data.categoryId) {
+          for (const l of lines) {
+            if (l.item_id) {
+              await sql`update items set category_id = ${data.categoryId} where id = ${l.item_id} and user_id = ${context.userId}`;
+            }
+          }
+        }
+        const after = await sql<{ quantity: unknown; received_qty: unknown }>`
+          select quantity, received_qty from purchases where invoice_id = ${data.id} and user_id = ${context.userId}
+        `;
+        const arrived = after.every((l) => num(l.received_qty) + 1e-9 >= num(l.quantity));
+        const status: ReceiveStatus = arrived ? "arrived" : "in_transit";
+        await sql`
+          update purchase_invoices set receive_status = ${status}
+          where id = ${data.id} and user_id = ${context.userId}
+        `;
+        return { status };
+      });
+    }),
+  );
 
 export const listSaleInvoices = createServerFn({ method: "GET" })
   .middleware([authMiddleware])
@@ -480,209 +487,212 @@ export const saveSaleInvoice = createServerFn({ method: "POST" })
       lines: LineIn[];
     }) => d,
   )
-  .handler(async ({ context, data }) => {
-    const { sql } = await guard(context.userId, "sales");
-    const cleanLines = data.lines.filter((l) => l.itemName.trim() && l.quantity > 0);
-    if (!cleanLines.length) throw new Error("حداقل یک ردیف کالا لازم است");
-    if (!data.id && data.customerId == null) throw new Error("مشتری را انتخاب کنید");
-    await assertOwned(sql, context.userId, [
-      ["parties", data.customerId],
-      ["accounts", data.accountId],
-      ["accounts", data.refundAccountId],
-      ["currencies", data.currencyId],
-      ["currencies", data.receivedCurrencyId],
-      ["sale_invoices", data.id],
-      ...(data.cashPaymentIds ?? []).filter((id) => Number(id) > 0).map((id) => ["party_payments", Number(id)] as const),
-      ...cleanLines.flatMap((l) => [["items", l.itemId] as const, ["units", l.unitId] as const]),
-    ]);
-    for (let attempt = 0; attempt < 5; attempt++) {
-      try {
-        return await withTransaction(async (sql) => {
-    const account = await requireAccount(sql, context.userId, data.accountId);
-    const kind = data.kind === "raw" ? "raw" : "product";
-    const inv = await loadInventoryState(sql, context.userId);
-    const pool = kind === "raw" ? inv.raw : inv.products;
-    const giveBack = new Map<number, number>();
-    if (data.id) {
-      const old = await sql<{ item_id: number | null; quantity: unknown }>`
-        select item_id, quantity from sales where invoice_id = ${data.id} and user_id = ${context.userId}
-      `;
-      for (const r of old) {
-        if (r.item_id == null) continue;
-        const idn = num(r.item_id);
-        giveBack.set(idn, (giveBack.get(idn) ?? 0) + num(r.quantity));
+  .handler(async ({ context, data }) =>
+    // STR-04: a replayed offline save returns its first result.
+    idempotent(context.userId, async () => {
+      const { sql } = await guard(context.userId, "sales");
+      const cleanLines = data.lines.filter((l) => l.itemName.trim() && l.quantity > 0);
+      if (!cleanLines.length) throw new Error("حداقل یک ردیف کالا لازم است");
+      if (!data.id && data.customerId == null) throw new Error("مشتری را انتخاب کنید");
+      await assertOwned(sql, context.userId, [
+        ["parties", data.customerId],
+        ["accounts", data.accountId],
+        ["accounts", data.refundAccountId],
+        ["currencies", data.currencyId],
+        ["currencies", data.receivedCurrencyId],
+        ["sale_invoices", data.id],
+        ...(data.cashPaymentIds ?? []).filter((id) => Number(id) > 0).map((id) => ["party_payments", Number(id)] as const),
+        ...cleanLines.flatMap((l) => [["items", l.itemId] as const, ["units", l.unitId] as const]),
+      ]);
+      for (let attempt = 0; attempt < 5; attempt++) {
+        try {
+          return await withTransaction(async (sql) => {
+      const account = await requireAccount(sql, context.userId, data.accountId);
+      const kind = data.kind === "raw" ? "raw" : "product";
+      const inv = await loadInventoryState(sql, context.userId);
+      const pool = kind === "raw" ? inv.raw : inv.products;
+      const giveBack = new Map<number, number>();
+      if (data.id) {
+        const old = await sql<{ item_id: number | null; quantity: unknown }>`
+          select item_id, quantity from sales where invoice_id = ${data.id} and user_id = ${context.userId}
+        `;
+        for (const r of old) {
+          if (r.item_id == null) continue;
+          const idn = num(r.item_id);
+          giveBack.set(idn, (giveBack.get(idn) ?? 0) + num(r.quantity));
+        }
       }
-    }
-    const needBy = new Map<number, { name: string; qty: number }>();
-    for (const l of cleanLines) {
-      if (l.itemId == null) throw new Error("هر ردیف باید از فهرست کالا انتخاب شود");
-      const cur = needBy.get(l.itemId) ?? { name: l.itemName, qty: 0 };
-      cur.qty += l.quantity;
-      needBy.set(l.itemId, cur);
-    }
-    const short: string[] = [];
-    for (const [itemId, n] of needBy) {
-      const card = pool.find((c) => c.itemId === itemId);
-      const have = (card?.qty ?? 0) + (giveBack.get(itemId) ?? 0);
-      if (have + 1e-9 < n.qty) {
-        short.push(`${n.name} (موجود ${formatMoney(have)}، لازم ${formatMoney(n.qty)})`);
+      const needBy = new Map<number, { name: string; qty: number }>();
+      for (const l of cleanLines) {
+        if (l.itemId == null) throw new Error("هر ردیف باید از فهرست کالا انتخاب شود");
+        const cur = needBy.get(l.itemId) ?? { name: l.itemName, qty: 0 };
+        cur.qty += l.quantity;
+        needBy.set(l.itemId, cur);
       }
-    }
-    if (short.length) {
-      throw new Error(
-        kind === "raw"
-          ? `مواد خام موجود نیست یا موجودی کافی نیست:\n${short.join("\n")}`
-          : `کالای تولیدشده موجود نیست یا موجودی کافی نیست:\n${short.join("\n")}`,
-      );
-    }
-    const rate = fxRate(data.fxEnabled, data.fxRate, 1);
-    const recvRate = data.receivedFxRate && data.receivedFxRate > 0 ? data.receivedFxRate : account.rateToBase;
-    const closed = Boolean(data.closed);
-    const catalogs = await loadCatalogs(sql, context.userId);
-    const cashIds = [...new Set((data.cashPaymentIds ?? []).map((id) => Number(id)).filter((id) => Number.isInteger(id) && id > 0))];
-    let cashPreview = 0;
-    for (const payId of cashIds) {
-      const row = await sql<{ amount: unknown; fx_rate: unknown; currency_id: number }>`
-        select amount, fx_rate, currency_id from party_payments
-        where id = ${payId} and user_id = ${context.userId} and party_id = ${data.customerId}
-          and kind = ${"payment"} and sale_invoice_id is null
-          and (applied_sale_id is null or applied_sale_id = ${data.id ?? 0})
-      `;
-      if (!row[0]) continue;
-      const curRate = catalogs.currencies.find((c) => c.id === num(row[0].currency_id))?.rateToBase || 1;
-      const payRate = num(row[0].fx_rate) > 0 ? num(row[0].fx_rate) : curRate;
-      cashPreview += num(row[0].amount) * payRate;
-    }
-    const goodsBasePreview = cleanLines.reduce((s, l) => s + l.quantity * l.unitPrice, 0) * rate;
-    const overPreview = data.receivedAmount * recvRate - (goodsBasePreview + cashPreview);
-    const refundPreview = overPreview > 1e-9 ? Math.max(0, data.refundAmount ?? 0) : 0;
-    if (refundPreview - Math.max(0, overPreview) > 1e-9) throw new Error("پرداخت باقی‌مانده از مابه‌التفاوت بیشتر است");
-    let id = data.id;
-    let invoiceNo = "";
-    if (id) {
-      const row = await sql<{ invoice_no: string }>`
-        select invoice_no from sale_invoices where id = ${id} and user_id = ${context.userId}
-      `;
-      if (!row[0]) throw new Error("فاکتور یافت نشد");
-      invoiceNo = row[0].invoice_no;
+      const short: string[] = [];
+      for (const [itemId, n] of needBy) {
+        const card = pool.find((c) => c.itemId === itemId);
+        const have = (card?.qty ?? 0) + (giveBack.get(itemId) ?? 0);
+        if (have + 1e-9 < n.qty) {
+          short.push(`${n.name} (موجود ${formatMoney(have)}، لازم ${formatMoney(n.qty)})`);
+        }
+      }
+      if (short.length) {
+        throw new Error(
+          kind === "raw"
+            ? `مواد خام موجود نیست یا موجودی کافی نیست:\n${short.join("\n")}`
+            : `کالای تولیدشده موجود نیست یا موجودی کافی نیست:\n${short.join("\n")}`,
+        );
+      }
+      const rate = fxRate(data.fxEnabled, data.fxRate, 1);
+      const recvRate = data.receivedFxRate && data.receivedFxRate > 0 ? data.receivedFxRate : account.rateToBase;
+      const closed = Boolean(data.closed);
+      const catalogs = await loadCatalogs(sql, context.userId);
+      const cashIds = [...new Set((data.cashPaymentIds ?? []).map((id) => Number(id)).filter((id) => Number.isInteger(id) && id > 0))];
+      let cashPreview = 0;
+      for (const payId of cashIds) {
+        const row = await sql<{ amount: unknown; fx_rate: unknown; currency_id: number }>`
+          select amount, fx_rate, currency_id from party_payments
+          where id = ${payId} and user_id = ${context.userId} and party_id = ${data.customerId}
+            and kind = ${"payment"} and sale_invoice_id is null
+            and (applied_sale_id is null or applied_sale_id = ${data.id ?? 0})
+        `;
+        if (!row[0]) continue;
+        const curRate = catalogs.currencies.find((c) => c.id === num(row[0].currency_id))?.rateToBase || 1;
+        const payRate = num(row[0].fx_rate) > 0 ? num(row[0].fx_rate) : curRate;
+        cashPreview += num(row[0].amount) * payRate;
+      }
+      const goodsBasePreview = cleanLines.reduce((s, l) => s + l.quantity * l.unitPrice, 0) * rate;
+      const overPreview = data.receivedAmount * recvRate - (goodsBasePreview + cashPreview);
+      const refundPreview = overPreview > 1e-9 ? Math.max(0, data.refundAmount ?? 0) : 0;
+      if (refundPreview - Math.max(0, overPreview) > 1e-9) throw new Error("پرداخت باقی‌مانده از مابه‌التفاوت بیشتر است");
+      let id = data.id;
+      let invoiceNo = "";
+      if (id) {
+        const row = await sql<{ invoice_no: string }>`
+          select invoice_no from sale_invoices where id = ${id} and user_id = ${context.userId}
+        `;
+        if (!row[0]) throw new Error("فاکتور یافت نشد");
+        invoiceNo = row[0].invoice_no;
+        await sql`
+          update sale_invoices set
+            customer_id = ${data.customerId}, occurred_on = ${data.occurredOn},
+            currency_id = ${data.currencyId}, fx_enabled = ${data.fxEnabled}, fx_rate = ${rate},
+            received_amount = ${data.receivedAmount}, received_fx_rate = ${recvRate},
+            account_id = ${data.accountId}, notes = ${data.notes},
+            kind = ${kind}, closed = ${closed}
+          where id = ${id} and user_id = ${context.userId}
+        `;
+        await sql`delete from sales where invoice_id = ${id} and user_id = ${context.userId}`;
+      } else {
+        invoiceNo = await allocInvoiceNo(sql, context.userId, "sale_invoices", "S");
+        const rows = await sql<{ id: number }>`
+          insert into sale_invoices (
+            user_id, customer_id, invoice_no, occurred_on, currency_id, fx_enabled, fx_rate,
+            received_amount, received_fx_rate, account_id, notes, kind, closed
+          ) values (
+            ${context.userId}, ${data.customerId}, ${invoiceNo}, ${data.occurredOn}, ${data.currencyId},
+            ${data.fxEnabled}, ${rate}, ${data.receivedAmount}, ${recvRate}, ${data.accountId}, ${data.notes}, ${kind},
+            ${closed}
+          ) returning id
+        `;
+        id = rows[0].id;
+      }
+      if (!id) throw new Error("فاکتور ذخیره نشد");
+      let lineNo = 1;
+      for (const l of cleanLines) {
+        await sql`
+          insert into sales (
+            user_id, customer_id, item_id, item_name, quantity, unit_id, unit_price, currency_id,
+            account_id, occurred_on, notes, status, invoice_no, invoice_id, line_no
+          ) values (
+            ${context.userId}, ${data.customerId}, ${l.itemId}, ${l.itemName.trim()}, ${l.quantity},
+            ${l.unitId}, ${l.unitPrice}, ${data.currencyId}, ${data.accountId}, ${data.occurredOn},
+            ${l.notes ?? ""}, ${"final"}, ${invoiceNo}, ${id}, ${lineNo}
+          )
+        `;
+        lineNo += 1;
+      }
+      await syncLinkedPayment(sql, {
+        userId: context.userId,
+        kind: "receipt",
+        partyId: data.customerId,
+        amount: data.receivedAmount,
+        currencyId: data.receivedCurrencyId ?? account.currencyId,
+        fxRate: recvRate,
+        accountId: data.accountId,
+        occurredOn: data.occurredOn,
+        saleInvoiceId: id,
+        label: `دریافت فاکتور ${invoiceNo}`,
+      });
+      const goodsBase = cleanLines.reduce((s, l) => s + l.quantity * l.unitPrice, 0) * rate;
+      let cashBase = 0;
+      await sql`update party_payments set applied_sale_id = null where user_id = ${context.userId} and applied_sale_id = ${id}`;
+      for (const payId of cashIds) {
+        const row = await sql<{ amount: unknown; fx_rate: unknown; currency_id: number }>`
+          update party_payments set applied_sale_id = ${id}
+          where id = ${payId} and user_id = ${context.userId} and party_id = ${data.customerId}
+            and kind = ${"payment"} and sale_invoice_id is null
+            and (applied_sale_id is null or applied_sale_id = ${id})
+          returning amount, fx_rate, currency_id
+        `;
+        if (!row[0]) continue;
+        const curRate = catalogs.currencies.find((c) => c.id === num(row[0].currency_id))?.rateToBase || 1;
+        const payRate = num(row[0].fx_rate) > 0 ? num(row[0].fx_rate) : curRate;
+        cashBase += num(row[0].amount) * payRate;
+      }
+      const receivedBase = data.receivedAmount * recvRate;
+      const over = receivedBase - (goodsBase + cashBase);
+      let refund = 0;
+      let refundAccount: number | null = null;
+      if (over > 1e-9) {
+        refund = Math.max(0, data.refundAmount ?? 0);
+        if (refund - over > 1e-9) throw new Error("پرداخت باقی‌مانده از مابه‌التفاوت بیشتر است");
+        if (refund > 1e-9) {
+          if (data.refundAccountId == null) throw new Error("دخل افغانی را انتخاب کنید");
+          const refundAcc = await requireAccount(sql, context.userId, data.refundAccountId);
+          const afn = catalogs.currencies.find((c) => c.symbol === "؋" || c.name === "افغانی");
+          if (!afn || refundAcc.currencyId !== afn.id) throw new Error("پرداخت باقی‌مانده فقط از دخل افغانی است");
+          const oldRefund = await sql<{ amount: unknown; account_id: number | null }>`
+            select amount, account_id from party_payments
+            where user_id = ${context.userId} and sale_invoice_id = ${id} and kind = ${"payment"}
+          `;
+          const oldRefundAccountId = oldRefund[0]?.account_id == null ? null : num(oldRefund[0].account_id);
+          const oldRefundAmount = oldRefund[0] ? num(oldRefund[0].amount) : 0;
+          await assertCashAvailable(sql, context.userId, {
+            accountId: refundAcc.id,
+            amount: refund,
+            amountRate: 1,
+            creditBack: oldRefundAccountId === refundAcc.id ? oldRefundAmount : 0,
+          });
+          refundAccount = refundAcc.id;
+        }
+      }
+      await syncLinkedPayment(sql, {
+        userId: context.userId,
+        kind: "payment",
+        partyId: data.customerId,
+        amount: refund,
+        currencyId: catalogs.currencies.find((c) => c.symbol === "؋" || c.name === "افغانی")?.id ?? account.currencyId,
+        fxRate: 1,
+        accountId: refundAccount,
+        occurredOn: data.occurredOn,
+        saleInvoiceId: id,
+        label: `بازپرداخت فاکتور ${invoiceNo}`,
+      });
       await sql`
-        update sale_invoices set
-          customer_id = ${data.customerId}, occurred_on = ${data.occurredOn},
-          currency_id = ${data.currencyId}, fx_enabled = ${data.fxEnabled}, fx_rate = ${rate},
-          received_amount = ${data.receivedAmount}, received_fx_rate = ${recvRate},
-          account_id = ${data.accountId}, notes = ${data.notes},
-          kind = ${kind}, closed = ${closed}
+        update sale_invoices set cash_included_base = ${cashBase}, refund_amount = ${refund}, refund_account_id = ${refundAccount}
         where id = ${id} and user_id = ${context.userId}
       `;
-      await sql`delete from sales where invoice_id = ${id} and user_id = ${context.userId}`;
-    } else {
-      invoiceNo = await allocInvoiceNo(sql, context.userId, "sale_invoices", "S");
-      const rows = await sql<{ id: number }>`
-        insert into sale_invoices (
-          user_id, customer_id, invoice_no, occurred_on, currency_id, fx_enabled, fx_rate,
-          received_amount, received_fx_rate, account_id, notes, kind, closed
-        ) values (
-          ${context.userId}, ${data.customerId}, ${invoiceNo}, ${data.occurredOn}, ${data.currencyId},
-          ${data.fxEnabled}, ${rate}, ${data.receivedAmount}, ${recvRate}, ${data.accountId}, ${data.notes}, ${kind},
-          ${closed}
-        ) returning id
-      `;
-      id = rows[0].id;
-    }
-    if (!id) throw new Error("فاکتور ذخیره نشد");
-    let lineNo = 1;
-    for (const l of cleanLines) {
-      await sql`
-        insert into sales (
-          user_id, customer_id, item_id, item_name, quantity, unit_id, unit_price, currency_id,
-          account_id, occurred_on, notes, status, invoice_no, invoice_id, line_no
-        ) values (
-          ${context.userId}, ${data.customerId}, ${l.itemId}, ${l.itemName.trim()}, ${l.quantity},
-          ${l.unitId}, ${l.unitPrice}, ${data.currencyId}, ${data.accountId}, ${data.occurredOn},
-          ${l.notes ?? ""}, ${"final"}, ${invoiceNo}, ${id}, ${lineNo}
-        )
-      `;
-      lineNo += 1;
-    }
-    await syncLinkedPayment(sql, {
-      userId: context.userId,
-      kind: "receipt",
-      partyId: data.customerId,
-      amount: data.receivedAmount,
-      currencyId: data.receivedCurrencyId ?? account.currencyId,
-      fxRate: recvRate,
-      accountId: data.accountId,
-      occurredOn: data.occurredOn,
-      saleInvoiceId: id,
-      label: `دریافت فاکتور ${invoiceNo}`,
-    });
-    const goodsBase = cleanLines.reduce((s, l) => s + l.quantity * l.unitPrice, 0) * rate;
-    let cashBase = 0;
-    await sql`update party_payments set applied_sale_id = null where user_id = ${context.userId} and applied_sale_id = ${id}`;
-    for (const payId of cashIds) {
-      const row = await sql<{ amount: unknown; fx_rate: unknown; currency_id: number }>`
-        update party_payments set applied_sale_id = ${id}
-        where id = ${payId} and user_id = ${context.userId} and party_id = ${data.customerId}
-          and kind = ${"payment"} and sale_invoice_id is null
-          and (applied_sale_id is null or applied_sale_id = ${id})
-        returning amount, fx_rate, currency_id
-      `;
-      if (!row[0]) continue;
-      const curRate = catalogs.currencies.find((c) => c.id === num(row[0].currency_id))?.rateToBase || 1;
-      const payRate = num(row[0].fx_rate) > 0 ? num(row[0].fx_rate) : curRate;
-      cashBase += num(row[0].amount) * payRate;
-    }
-    const receivedBase = data.receivedAmount * recvRate;
-    const over = receivedBase - (goodsBase + cashBase);
-    let refund = 0;
-    let refundAccount: number | null = null;
-    if (over > 1e-9) {
-      refund = Math.max(0, data.refundAmount ?? 0);
-      if (refund - over > 1e-9) throw new Error("پرداخت باقی‌مانده از مابه‌التفاوت بیشتر است");
-      if (refund > 1e-9) {
-        if (data.refundAccountId == null) throw new Error("دخل افغانی را انتخاب کنید");
-        const refundAcc = await requireAccount(sql, context.userId, data.refundAccountId);
-        const afn = catalogs.currencies.find((c) => c.symbol === "؋" || c.name === "افغانی");
-        if (!afn || refundAcc.currencyId !== afn.id) throw new Error("پرداخت باقی‌مانده فقط از دخل افغانی است");
-        const oldRefund = await sql<{ amount: unknown; account_id: number | null }>`
-          select amount, account_id from party_payments
-          where user_id = ${context.userId} and sale_invoice_id = ${id} and kind = ${"payment"}
-        `;
-        const oldRefundAccountId = oldRefund[0]?.account_id == null ? null : num(oldRefund[0].account_id);
-        const oldRefundAmount = oldRefund[0] ? num(oldRefund[0].amount) : 0;
-        await assertCashAvailable(sql, context.userId, {
-          accountId: refundAcc.id,
-          amount: refund,
-          amountRate: 1,
-          creditBack: oldRefundAccountId === refundAcc.id ? oldRefundAmount : 0,
-        });
-        refundAccount = refundAcc.id;
+      return { id, invoiceNo };
+          });
+        } catch (err) {
+          if (data.id || attempt === 4 || !isUniqueViolation(err)) throw err;
+        }
       }
-    }
-    await syncLinkedPayment(sql, {
-      userId: context.userId,
-      kind: "payment",
-      partyId: data.customerId,
-      amount: refund,
-      currencyId: catalogs.currencies.find((c) => c.symbol === "؋" || c.name === "افغانی")?.id ?? account.currencyId,
-      fxRate: 1,
-      accountId: refundAccount,
-      occurredOn: data.occurredOn,
-      saleInvoiceId: id,
-      label: `بازپرداخت فاکتور ${invoiceNo}`,
-    });
-    await sql`
-      update sale_invoices set cash_included_base = ${cashBase}, refund_amount = ${refund}, refund_account_id = ${refundAccount}
-      where id = ${id} and user_id = ${context.userId}
-    `;
-    return { id, invoiceNo };
-        });
-      } catch (err) {
-        if (data.id || attempt === 4 || !isUniqueViolation(err)) throw err;
-      }
-    }
-    throw new Error("فاکتور ذخیره نشد");
-  });
+      throw new Error("فاکتور ذخیره نشد");
+    }),
+  );
 
 export const deleteSaleInvoice = createServerFn({ method: "POST" })
   .middleware([authMiddleware])

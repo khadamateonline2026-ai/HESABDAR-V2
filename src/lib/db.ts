@@ -215,7 +215,8 @@ export async function withTransaction<T>(fn: (sql: Sql) => Promise<T>): Promise<
         const result = await tx.query<R>(text, params);
         return result.rows;
       });
-      return fn(sql);
+      const { inOpTx } = await import("./op-scope.server");
+      return inOpTx(sql, fn);
     });
   }
   await getSql();
@@ -228,7 +229,9 @@ export async function withTransaction<T>(fn: (sql: Sql) => Promise<T>): Promise<
       const res = await client.query(text, params);
       return res.rows as R[];
     });
-    const out = await fn(sql);
+    // STR-04: claims the request's offline idempotency key in this transaction.
+    const { inOpTx } = await import("./op-scope.server");
+    const out = await inOpTx(sql, fn);
     await client.query("COMMIT");
     return out;
   } catch (err) {

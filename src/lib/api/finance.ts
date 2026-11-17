@@ -4,6 +4,7 @@ import { convertAmount, num, text } from "@/lib/format";
 import { withTransaction } from "@/lib/db";
 import { sqlOf, guard, assertCashAvailable, loadCatalogs, loadInventoryState, fxToBase } from "./helpers";
 import { assertOwned } from "./ownership";
+import { idempotent } from "./idempotency";
 
 export const saveAccount = createServerFn({ method: "POST" })
   .middleware([authMiddleware])
@@ -383,58 +384,64 @@ export const saveOpeningStock = createServerFn({ method: "POST" })
       notes: string;
     }) => d,
   )
-  .handler(async ({ context, data }) => {
-    const { sql } = await guard(context.userId, "opening");
-    const qty = data.quantity;
-    const name = data.itemName.trim();
-    if (Math.abs(qty) <= 1e-9) throw new Error("مقدار باید بزرگ‌تر از صفر باشد");
-    let unitCost = 0;
-    if (data.kind === "raw") {
-      unitCost = await lastRawUnitCost(sql, context.userId, name);
-    } else {
-      const inv = await loadInventoryState(sql, context.userId);
-      unitCost = inv.products.find((c) => c.name === name)?.unitCost ?? 0;
-    }
-    if (qty < 0) {
-      const inv = await loadInventoryState(sql, context.userId);
-      const card =
-        data.kind === "raw"
-          ? inv.raw.find((c) => c.name === name)
-          : inv.products.find((c) => c.name === name);
-      let available = card?.qty ?? 0;
-      if (data.id) {
-        const old = await sql<{ quantity: unknown }>`
-          select quantity from opening_stock where id = ${data.id} and user_id = ${context.userId}
-        `;
-        if (old[0]) available -= num(old[0].quantity);
+  .handler(async ({ context, data }) =>
+    // STR-04: a replayed offline save returns its first result.
+    idempotent(context.userId, async () => {
+      const { sql } = await guard(context.userId, "opening");
+      const qty = data.quantity;
+      const name = data.itemName.trim();
+      if (Math.abs(qty) <= 1e-9) throw new Error("مقدار باید بزرگ‌تر از صفر باشد");
+      let unitCost = 0;
+      if (data.kind === "raw") {
+        unitCost = await lastRawUnitCost(sql, context.userId, name);
+      } else {
+        const inv = await loadInventoryState(sql, context.userId);
+        unitCost = inv.products.find((c) => c.name === name)?.unitCost ?? 0;
       }
-      if (Math.abs(qty) > available + 1e-9) throw new Error("موجودی کافی نیست");
-    }
-    const valueBase = qty * unitCost;
-    let id = data.id;
-    if (id) {
-      await sql`
-        update opening_stock
-        set item_name = ${name}, warehouse_name = ${data.warehouseName}, quantity = ${qty},
-            value_base = ${valueBase}, occurred_on = ${data.occurredOn}, notes = ${data.notes},
-            sale_price = ${0}, unit_cost = ${unitCost}
-        where id = ${id} and user_id = ${context.userId}
-      `;
-    } else {
-      const rows = await sql<{ id: number }>`
-        insert into opening_stock (
-          user_id, kind, item_name, warehouse_name, quantity, value_base, occurred_on, notes, sale_price, unit_cost
-        )
-        values (
-          ${context.userId}, ${data.kind}, ${name}, ${data.warehouseName}, ${qty}, ${valueBase},
-          ${data.occurredOn}, ${data.notes}, ${0}, ${unitCost}
-        )
-        returning id
-      `;
-      id = rows[0].id;
-    }
-    return { id };
-  });
+      if (qty < 0) {
+        const inv = await loadInventoryState(sql, context.userId);
+        const card =
+          data.kind === "raw"
+            ? inv.raw.find((c) => c.name === name)
+            : inv.products.find((c) => c.name === name);
+        let available = card?.qty ?? 0;
+        if (data.id) {
+          const old = await sql<{ quantity: unknown }>`
+            select quantity from opening_stock where id = ${data.id} and user_id = ${context.userId}
+          `;
+          if (old[0]) available -= num(old[0].quantity);
+        }
+        if (Math.abs(qty) > available + 1e-9) throw new Error("موجودی کافی نیست");
+      }
+      // STR-04: one transaction, so the offline idempotency key commits with the write
+      return withTransaction(async (sql) => {
+        const valueBase = qty * unitCost;
+        let id = data.id;
+        if (id) {
+          await sql`
+            update opening_stock
+            set item_name = ${name}, warehouse_name = ${data.warehouseName}, quantity = ${qty},
+                value_base = ${valueBase}, occurred_on = ${data.occurredOn}, notes = ${data.notes},
+                sale_price = ${0}, unit_cost = ${unitCost}
+            where id = ${id} and user_id = ${context.userId}
+          `;
+        } else {
+          const rows = await sql<{ id: number }>`
+            insert into opening_stock (
+              user_id, kind, item_name, warehouse_name, quantity, value_base, occurred_on, notes, sale_price, unit_cost
+            )
+            values (
+              ${context.userId}, ${data.kind}, ${name}, ${data.warehouseName}, ${qty}, ${valueBase},
+              ${data.occurredOn}, ${data.notes}, ${0}, ${unitCost}
+            )
+            returning id
+          `;
+          id = rows[0].id;
+        }
+        return { id };
+      });
+    }),
+  );
 
 export const deleteOpeningStock = createServerFn({ method: "POST" })
   .middleware([authMiddleware])
