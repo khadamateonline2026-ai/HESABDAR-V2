@@ -58,9 +58,10 @@ export const getDashboard = createServerFn({ method: "GET" })
         where d.user_id = ${context.userId}
       `,
       sql<Record<string, unknown>>`
-        select wp.worker_id, wp.amount, p.employment
+        select wp.worker_id, wp.amount * case when wp.currency_id is null then 1 else coalesce(nullif(wp.fx_rate, 0), wc.rate_to_base, 1) end as amount_base, p.employment
         from worker_payments wp
         join parties p on p.id = wp.worker_id and p.user_id = wp.user_id
+        left join currencies wc on wc.id = wp.currency_id and wc.user_id = wp.user_id
         where wp.user_id = ${context.userId}
       `,
       sql<Record<string, unknown>>`
@@ -85,7 +86,7 @@ export const getDashboard = createServerFn({ method: "GET" })
         ) +
       workerPays
         .filter((r) => text(r.employment) === "salaried")
-        .reduce((s, r) => s + num(r.amount), 0);
+        .reduce((s, r) => s + num(r.amount_base), 0);
     const expenseDebtBase = expenses
       .filter((r) => Boolean(r.as_debt))
       .reduce((s, r) => s + toBase(num(r.amount), num(r.currency_id)), 0);
@@ -147,7 +148,7 @@ export const getDashboard = createServerFn({ method: "GET" })
     let salaryDueBase = 0;
     for (const w of catalogs.parties.filter((p) => p.kind === "worker" && p.employment === "salaried")) {
       const earned = dues.filter((d) => d.workerId === w.id).reduce((s, d) => s + toBase(d.amount, d.currencyId), 0);
-      const paid = workerPays.filter((p) => num(p.worker_id) === w.id).reduce((s, p) => s + num(p.amount), 0);
+      const paid = workerPays.filter((p) => num(p.worker_id) === w.id).reduce((s, p) => s + num(p.amount_base), 0);
       salaryDueBase += Math.max(0, earned - paid);
     }
 
@@ -176,7 +177,7 @@ export const getDashboard = createServerFn({ method: "GET" })
         const name = text(mine[0]?.product_name);
         work += gap * wageForProduct(name, w.jobTypeId, wageRates);
       }
-      const paid = workerPays.filter((p) => num(p.worker_id) === w.id).reduce((s, p) => s + num(p.amount), 0);
+      const paid = workerPays.filter((p) => num(p.worker_id) === w.id).reduce((s, p) => s + num(p.amount_base), 0);
       workerWagePayableBase += Math.max(0, work - paid);
     }
 
@@ -302,7 +303,7 @@ export const getDashboard = createServerFn({ method: "GET" })
     for (const p of workerPays) {
       if (text(p.employment) !== "salaried") continue;
       const id = num(p.worker_id);
-      salaryLeft.set(id, (salaryLeft.get(id) ?? 0) + num(p.amount));
+      salaryLeft.set(id, (salaryLeft.get(id) ?? 0) + num(p.amount_base));
     }
     const salaryDues = dues
       .filter((d) => d.workerId != null)
@@ -311,8 +312,8 @@ export const getDashboard = createServerFn({ method: "GET" })
     for (const d of salaryDues) {
       const wid = d.workerId as number;
       const left = salaryLeft.get(wid) ?? 0;
-      if (left + 1e-9 >= d.amount) {
-        salaryLeft.set(wid, left - d.amount);
+      if (left + 1e-9 >= d.amountBase) {
+        salaryLeft.set(wid, left - d.amountBase);
         continue;
       }
       alerts.push({

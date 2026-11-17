@@ -2,7 +2,7 @@ import { createServerFn } from "@tanstack/react-start";
 import { authMiddleware } from "@/lib/auth/middleware";
 import { num, text } from "@/lib/format";
 import { convertAmount } from "@/lib/format";
-import { fxToBase, guard, invoiceOf, isFinalStatus, itemKindLabel, itemKindOf, loadCatalogs, loadInventoryState, requireProfile, sqlOf, assertCashAvailable, assertAccountantPin } from "./helpers";
+import { fxToBase, guard, invoiceOf, isFinalStatus, itemKindLabel, itemKindOf, loadCatalogs, loadInventoryState, loadWorkerPaidBase, requireProfile, sqlOf, assertCashAvailable, assertAccountantPin } from "./helpers";
 import { loadRecurringDues } from "./ops";
 import type { Item, ModelSummary, PartyPayment, PartySummary, PurchaseLedgerRow, SaleLedgerRow } from "@/lib/types";
 import { withTransaction, type Sql } from "@/lib/db";
@@ -63,13 +63,8 @@ export async function loadExpenseDebts(
     select id, rate_to_base from currencies where user_id = ${userId}
   `;
   const dueRate = (id: number) => currencies.find((c) => num(c.id) === id)?.rate_to_base;
-  const pays = await sql<{ worker_id: number; amount: unknown }>`
-    select worker_id, amount from worker_payments where user_id = ${userId}
-  `;
-  const paidLeft = new Map<number, number>();
-  for (const p of pays) {
-    paidLeft.set(num(p.worker_id), (paidLeft.get(num(p.worker_id)) ?? 0) + num(p.amount));
-  }
+  // ACC-06: payments and dues are compared in the base currency.
+  const paidLeft = await loadWorkerPaidBase(sql, userId);
   const unpaid = dues
     .filter((x) => x.status === "unpaid")
     .slice()
@@ -79,12 +74,12 @@ export async function loadExpenseDebts(
     let amount = d.amount;
     if (d.workerId != null) {
       const left = paidLeft.get(d.workerId) ?? 0;
-      if (left + 1e-9 >= amount) {
-        paidLeft.set(d.workerId, left - amount);
+      if (left + 1e-9 >= d.amountBase) {
+        paidLeft.set(d.workerId, left - d.amountBase);
         continue;
       }
       if (left > 1e-9) {
-        amount -= left;
+        amount -= d.amountBase > 1e-9 ? (left / d.amountBase) * d.amount : 0;
         paidLeft.set(d.workerId, 0);
       }
     }

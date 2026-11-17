@@ -360,8 +360,12 @@ export async function withBalances(
       left join currencies c on c.id = pp.currency_id and c.user_id = pp.user_id
       where pp.user_id = ${userId}
     `,
-    sql<{ account_id: number | null; amount: unknown; account_rate: unknown }>`
-      select account_id, amount, account_rate from worker_payments where user_id = ${userId}
+    sql<{ account_id: number | null; amount: unknown; account_rate: unknown; from_rate: unknown }>`
+      select wp.account_id, wp.amount, wp.account_rate,
+        case when wp.currency_id is null then 1 else coalesce(nullif(wp.fx_rate, 0), wc.rate_to_base, 1) end as from_rate
+      from worker_payments wp
+      left join currencies wc on wc.id = wp.currency_id and wc.user_id = wp.user_id
+      where wp.user_id = ${userId}
     `,
   ]);
 
@@ -421,7 +425,8 @@ export async function withBalances(
   }
   for (const r of workerPays) {
     if (r.account_id == null) continue;
-    const converted = convertAmount(num(r.amount), 1, frozen(r.account_rate, accRateNow(r.account_id)));
+    // ACC-06: a payment in another currency leaves the account at its frozen rate.
+    const converted = convertAmount(num(r.amount), num(r.from_rate) || 1, frozen(r.account_rate, accRateNow(r.account_id)));
     byId.set(r.account_id, (byId.get(r.account_id) ?? 0) - converted);
   }
 
@@ -1305,6 +1310,22 @@ export type WarehouseStockRow = {
   warehouseName: string;
   items: { name: string; qty: number; valueBase: number; kind: Item["kind"] }[];
 };
+
+/**
+ * ACC-06: what each worker was paid, in the base currency. A payment without a
+ * currency is in the base currency; otherwise its frozen rate (or today's).
+ */
+export async function loadWorkerPaidBase(sql: Sql, userId: string): Promise<Map<number, number>> {
+  const rows = await sql<{ worker_id: number; amount_base: unknown }>`
+    select wp.worker_id, wp.amount * case when wp.currency_id is null then 1 else coalesce(nullif(wp.fx_rate, 0), wc.rate_to_base, 1) end as amount_base
+    from worker_payments wp
+    left join currencies wc on wc.id = wp.currency_id and wc.user_id = wp.user_id
+    where wp.user_id = ${userId}
+  `;
+  const out = new Map<number, number>();
+  for (const r of rows) out.set(num(r.worker_id), (out.get(num(r.worker_id)) ?? 0) + num(r.amount_base));
+  return out;
+}
 
 export const MAIN_WAREHOUSE = "گدام اصلی";
 

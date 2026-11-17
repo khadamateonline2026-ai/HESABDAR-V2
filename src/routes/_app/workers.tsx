@@ -1030,8 +1030,9 @@ function duesCovered(dues: RecurringDue[], paidTotal: number): RecurringDue[] {
   return [...dues]
     .sort((a, b) => (a.dueOn === b.dueOn ? a.period.localeCompare(b.period) : a.dueOn.localeCompare(b.dueOn)))
     .map((d) => {
-      if (rest + 1e-9 >= d.amount) {
-        rest -= d.amount;
+      // ACC-06: paidTotal is in ؋; compare with the due's base amount.
+      if (rest + 1e-9 >= d.amountBase) {
+        rest -= d.amountBase;
         return { ...d, status: "paid" as const };
       }
       return { ...d, status: "unpaid" as const };

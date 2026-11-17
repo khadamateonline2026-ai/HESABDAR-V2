@@ -458,7 +458,7 @@ export function duePeriods(
 export async function loadRecurringDues(sql: Sql, userId: string): Promise<RecurringDue[]> {
   const [recs, periods] = await Promise.all([
     sql<Record<string, unknown>>`
-      select r.*, c.symbol as currency_symbol, p.name as party_name
+      select r.*, c.symbol as currency_symbol, c.rate_to_base as currency_rate, p.name as party_name
       from recurring_expenses r
       join currencies c on c.id = r.currency_id and c.user_id = r.user_id
       left join parties p on p.id = r.party_id and p.user_id = r.user_id
@@ -481,6 +481,7 @@ export async function loadRecurringDues(sql: Sql, userId: string): Promise<Recur
         recurringId: num(r.id),
         title: text(r.title),
         amount: num(r.amount),
+        amountBase: num(r.amount) * (num(r.currency_rate) || 1),
         currencyId: num(r.currency_id),
         currencySymbol: text(r.currency_symbol),
         period: slot.period,

@@ -31,9 +31,10 @@ export const getWorkerLedger = createServerFn({ method: "GET" })
         select * from work_orders where user_id = ${context.userId}
       `,
       sql<Record<string, unknown>>`
-        select wp.*, a.name as account_name
+        select wp.*, a.name as account_name, wp.amount * case when wp.currency_id is null then 1 else coalesce(nullif(wp.fx_rate, 0), wc.rate_to_base, 1) end as amount_base
         from worker_payments wp
         left join accounts a on a.id = wp.account_id and a.user_id = wp.user_id
+        left join currencies wc on wc.id = wp.currency_id and wc.user_id = wp.user_id
         where wp.user_id = ${context.userId} order by wp.occurred_on desc, wp.id desc
       `,
       sql<Record<string, unknown>>`
@@ -58,6 +59,7 @@ export const getWorkerLedger = createServerFn({ method: "GET" })
       wagePerUnit: num(r.wage_per_unit),
     }));
     const paysByWorker = new Map<number, WorkerPayment[]>();
+    const paidBase = new Map(payments.map((r) => [num(r.id), num(r.amount_base)]));
     for (const r of payments) {
       const workerId = num(r.worker_id);
       const row: WorkerPayment = {
@@ -97,7 +99,8 @@ export const getWorkerLedger = createServerFn({ method: "GET" })
       }
       const models = [...byProduct.values()];
       const workerPays = (paysByWorker.get(worker.id) ?? []).map((p) => ({ ...p, workerName: worker.name }));
-      const paidTotal = workerPays.reduce((s, p) => s + p.amount, 0);
+      // ACC-06: totals are in the base currency (؋), like the wages and dues.
+      const paidTotal = (paysByWorker.get(worker.id) ?? []).reduce((s, p) => s + (paidBase.get(p.id) ?? p.amount), 0);
       const deliveries: WorkerDeliveryLine[] = deliveryRows
         .filter((d) => num(d.worker_id) === worker.id)
         .map((d) => {
@@ -136,7 +139,7 @@ export const getWorkerLedger = createServerFn({ method: "GET" })
       }
       const workTotal = models.reduce((s, m) => s + m.wageTotal, 0);
       if (worker.employment === "salaried") {
-        const earned = dues.filter((d) => d.workerId === worker.id).reduce((s, d) => s + d.amount, 0);
+        const earned = dues.filter((d) => d.workerId === worker.id).reduce((s, d) => s + d.amountBase, 0);
         return {
           worker,
           models: [],
@@ -215,11 +218,13 @@ export const saveWorkerPayment = createServerFn({ method: "POST" })
       occurredOn: string;
       notes: string;
       accountId?: number | null;
+      /** ACC-06: payment currency; omitted = base currency (؋). */
+      currencyId?: number | null;
     }) => d,
   )
   .handler(async ({ context, data }) => {
     const { sql } = await guard(context.userId, "workers");
-    await assertOwned(sql, context.userId, [["accounts", data.accountId]]);
+    await assertOwned(sql, context.userId, [["accounts", data.accountId], ["currencies", data.currencyId]]);
     if (data.amount <= 0) throw new Error("مبلغ باید بزرگ‌تر از صفر باشد");
     const worker = await sql<{ id: number }>`
       select id from parties
@@ -228,24 +233,40 @@ export const saveWorkerPayment = createServerFn({ method: "POST" })
     if (!worker[0]) throw new Error("کارگر یافت نشد");
     const accountId = data.accountId ?? null;
     let creditBack = 0;
+    let currencyId: number | null = data.currencyId ?? null;
+    let fxRate: number | null = null;
     if (data.id) {
-      const old = await sql<{ account_id: number | null; amount: unknown }>`
-        select account_id, amount from worker_payments where id = ${data.id} and user_id = ${context.userId}
+      const old = await sql<{ account_id: number | null; amount: unknown; currency_id: number | null; fx_rate: unknown; account_rate: unknown }>`
+        select account_id, amount, currency_id, fx_rate, account_rate from worker_payments
+        where id = ${data.id} and user_id = ${context.userId}
       `;
-      if (old[0] && old[0].account_id != null && accountId === num(old[0].account_id)) {
-        creditBack = num(old[0].amount);
+      // An edit that does not mention a currency keeps the payment's own.
+      if (old[0] && data.currencyId === undefined) {
+        currencyId = old[0].currency_id == null ? null : num(old[0].currency_id);
+        fxRate = old[0].fx_rate == null ? null : num(old[0].fx_rate);
       }
+      if (old[0] && old[0].account_id != null && accountId === num(old[0].account_id)) {
+        const oldRate = old[0].currency_id == null ? 1 : num(old[0].fx_rate) || 1;
+        creditBack = (num(old[0].amount) * oldRate) / (num(old[0].account_rate) || 1);
+      }
+    }
+    if (currencyId != null && fxRate == null) {
+      const cur = await sql<{ rate_to_base: unknown }>`
+        select rate_to_base from currencies where id = ${currencyId} and user_id = ${context.userId}
+      `;
+      fxRate = num(cur[0]?.rate_to_base) || 1;
     }
     await assertCashAvailable(sql, context.userId, {
       accountId,
       amount: data.amount,
-      amountRate: 1,
+      amountRate: currencyId == null ? 1 : (fxRate ?? 1),
       creditBack,
     });
     if (data.id) {
       await sql`
         update worker_payments set
-          amount = ${data.amount}, occurred_on = ${data.occurredOn}, notes = ${data.notes}, account_id = ${accountId}
+          amount = ${data.amount}, occurred_on = ${data.occurredOn}, notes = ${data.notes}, account_id = ${accountId},
+          currency_id = ${currencyId}, fx_rate = ${fxRate}
         where id = ${data.id} and user_id = ${context.userId}
       `;
       return { id: data.id };
@@ -258,9 +279,10 @@ export const saveWorkerPayment = createServerFn({ method: "POST" })
       "WP",
     );
     const rows = await sql<{ id: number }>`
-      insert into worker_payments (user_id, worker_id, amount, occurred_on, notes, invoice_no, account_id)
+      insert into worker_payments (user_id, worker_id, amount, occurred_on, notes, invoice_no, account_id, currency_id, fx_rate)
       values (
-        ${context.userId}, ${data.workerId}, ${data.amount}, ${data.occurredOn}, ${data.notes}, ${invoiceNo}, ${accountId}
+        ${context.userId}, ${data.workerId}, ${data.amount}, ${data.occurredOn}, ${data.notes}, ${invoiceNo}, ${accountId},
+        ${currencyId}, ${fxRate}
       )
       returning id
     `;

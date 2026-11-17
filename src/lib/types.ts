@@ -304,6 +304,8 @@ export type RecurringDue = {
   recurringId: number;
   title: string;
   amount: number;
+  /** ACC-06: amount in the base currency (today's rate), for comparing with payments. */
+  amountBase: number;
   currencyId: number;
   currencySymbol: string;
   period: string;
