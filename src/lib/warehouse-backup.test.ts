@@ -122,3 +122,36 @@ test("price/min aliases (English, Persian, nested, Persian digits) are mapped", 
   assert.deepEqual([c!.salePrice, c!.purchasePrice, c!.minQty], [70, 40, 2]);
   assert.deepEqual(d!.has, { minQty: true, salePrice: true, purchasePrice: true });
 });
+
+test("round trip keeps cost price, sale price, min stock, image", async () => {
+  const { importPurchasePrice } = await import("./warehouse-backup.ts");
+  const exported = JSON.stringify({
+    app: "hesabdar",
+    type: "hesabdar-warehouse",
+    section: "raw",
+    warehouse: "raw",
+    items: [
+      {
+        name: "آستر", category: "چینی", unit: "متر", minQty: 50, salePrice: 12, purchasePrice: 0, qty: 100,
+        notes: "", kind: "raw", bom: [], unitCost: 9.5, "حداقل موجودی": 50, "قیمت فروش": 12,
+        "قیمت تمام شد": 9.5, "قیمت خرید": 0, image: "data:image/png;base64,AAAA",
+      },
+      { name: "زیپ", category: "", unit: "عدد", minQty: 3, salePrice: 0, purchasePrice: 0, qty: 0, notes: "", kind: "raw", bom: [], unitCost: 4 },
+    ],
+  });
+  const out = parseWarehouseBackup(exported, "raw");
+  const [a, b] = out.items;
+  assert.equal(a.minQty, 50);
+  assert.equal(a.salePrice, 12);
+  assert.equal(a.unitCost, 9.5);
+  assert.equal(a.image, "data:image/png;base64,AAAA");
+  // new item with stock: catalog price stays as in file; cost rides on opening stock
+  assert.equal(importPurchasePrice(a, undefined), 0);
+  // new item without stock: cost price kept as purchase price
+  assert.equal(importPurchasePrice(b, undefined), 4);
+  // existing item: file value wins; missing field keeps current
+  assert.equal(importPurchasePrice({ ...a, purchasePrice: 7 }, { purchasePrice: 3 }), 7);
+  const legacy = parseWarehouseBackup(LEGACY_RAW, "raw").items[0];
+  assert.equal(importPurchasePrice(legacy, { purchasePrice: 3 }), 3);
+  assert.equal(legacy.unitCost, undefined);
+});

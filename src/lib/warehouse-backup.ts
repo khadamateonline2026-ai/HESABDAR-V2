@@ -21,6 +21,10 @@ export type WarehouseBackupItem = {
   kind?: WarehouseBackupSection;
   bom?: WarehouseBackupBom[];
   overheads?: { title: string; amount: number }[];
+  /** قیمت تمام‌شد (میانگین موزون هزینه هر واحد) در زمان گرفتن بک‌آپ. */
+  unitCost?: number;
+  /** عکس کالا (data URL) در صورت وجود. */
+  image?: string | null;
   /** Which price/min fields were actually present in the file (absent → keep existing values on re-import). */
   has?: { minQty: boolean; salePrice: boolean; purchasePrice: boolean };
 };
@@ -28,6 +32,7 @@ export type WarehouseBackupItem = {
 /** Alternate key names seen in older exports / hand-edited files (English + Persian). */
 const MIN_KEYS = ["minQty", "min_qty", "minStock", "min_stock", "minimum", "min", "alertQty", "minAlert", "حداقل", "حداقل موجودی", "هشدار حداقل موجودی"];
 const SALE_KEYS = ["salePrice", "sale_price", "sellPrice", "sell_price", "price", "قیمت فروش", "فروش"];
+const COST_KEYS = ["unitCost", "unit_cost", "avgCost", "averageCost", "قیمت تمام شد", "قیمت تمام‌شد", "قیمت تمام شده"];
 const BUY_KEYS = ["purchasePrice", "purchase_price", "buyPrice", "buy_price", "cost", "costPrice", "unitCost", "قیمت خرید", "خرید"];
 
 function pickNumber(row: Record<string, unknown>, keys: string[]): number | undefined {
@@ -146,6 +151,8 @@ function normalizeItem(raw: unknown): WarehouseBackupItem | null {
   const minQty = pickNumber(row, MIN_KEYS);
   const salePrice = pickNumber(row, SALE_KEYS);
   const purchasePrice = pickNumber(row, BUY_KEYS);
+  const unitCost = pickNumber(row, COST_KEYS);
+  const image = typeof row.image === "string" && row.image.startsWith("data:image/") ? row.image : undefined;
   return {
     name,
     category: asBackupText(row.category),
@@ -159,6 +166,8 @@ function normalizeItem(raw: unknown): WarehouseBackupItem | null {
     kind,
     bom: normalizeBom(row.bom),
     overheads: normalizeOverheads(row.overheads),
+    ...(unitCost !== undefined ? { unitCost } : {}),
+    ...(image ? { image } : {}),
   };
 }
 
@@ -195,4 +204,21 @@ export function parseWarehouseBackup(text: string, expectedSection: WarehouseBac
   }
   if (!items.length) throw new Error("فایل قلمی برای خواندن ندارد");
   return { section, items, format: format === "unknown" ? "current" : format };
+}
+
+/**
+ * قیمت خرید هنگام آپلود بک‌آپ:
+ * - کالای موجود: اگر فایل قیمت خرید دارد همان، وگرنه قیمت فعلی دست نمی‌خورد؛
+ * - کالای جدید: قیمت خرید فایل؛ اگر صفر/نبود و موجودی صفر است، قیمت تمام‌شد فایل
+ *   (تا قیمت تمام‌شد کالای بدون موجودی گم نشود؛ با موجودی، قیمت تمام‌شد روی موجودی اول دوره می‌نشیند).
+ */
+export function importPurchasePrice(
+  row: WarehouseBackupItem,
+  existing: { purchasePrice: number } | undefined,
+): number {
+  const filePrice = Math.max(0, asBackupNumber(row.purchasePrice));
+  if (existing) return row.has && !row.has.purchasePrice ? existing.purchasePrice : filePrice;
+  if (filePrice > 0) return filePrice;
+  if (Math.max(0, asBackupNumber(row.qty)) <= 0 && row.unitCost && row.unitCost > 0) return row.unitCost;
+  return 0;
 }

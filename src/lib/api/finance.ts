@@ -403,6 +403,10 @@ export const saveOpeningStock = createServerFn({ method: "POST" })
           const inv = await loadInventoryState(sql, context.userId);
           unitCost = inv.products.find((c) => c.name === name)?.unitCost ?? 0;
         }
+        // آپلود بک‌آپ گدام: قیمت تمام‌شد فایل برای ردیف جدید مثبت حفظ می‌شود.
+        if (!data.id && qty > 0 && typeof data.unitCost === "number" && Number.isFinite(data.unitCost) && data.unitCost > 0) {
+          unitCost = data.unitCost;
+        }
         if (qty < 0) {
           const inv = await loadInventoryState(sql, context.userId);
           const card =

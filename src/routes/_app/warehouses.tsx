@@ -34,6 +34,7 @@ import { WarehouseNames, shopWarehouseCards } from "@/shop/warehouse-names";
 import {
   asBackupNumber as asNumber,
   asBackupText as asText,
+  importPurchasePrice,
   parseWarehouseBackup,
   type WarehouseBackupBom as BackupBom,
   type WarehouseBackupItem as BackupItem,
@@ -400,8 +401,13 @@ function WarehouseBackup({
           ...row,
           kind: section,
           bom: row.bom ?? [],
+          // قیمت تمام‌شد (همان عددی که در لیست گدام دیده می‌شود)
+          unitCost: card.unitCost,
           "حداقل موجودی": card.minQty,
+          "قیمت فروش": card.salePrice,
+          "قیمت تمام شد": card.unitCost,
           ...(section === "raw" ? { "قیمت خرید": card.purchasePrice } : {}),
+          ...(card.image ? { image: card.image } : {}),
         };
       }),
     };
@@ -511,8 +517,9 @@ function WarehouseBackup({
           // Fields missing from the file keep the item's current value (no wipe on re-import).
           minQty: row.has && !row.has.minQty && existing ? existing.minQty : Math.max(0, asNumber(row.minQty)),
           salePrice: row.has && !row.has.salePrice && existing ? existing.salePrice : Math.max(0, asNumber(row.salePrice)),
-          purchasePrice:
-            row.has && !row.has.purchasePrice && existing ? existing.purchasePrice : Math.max(0, asNumber(row.purchasePrice)),
+          purchasePrice: importPurchasePrice(row, existing),
+          // عکس: فقط وقتی فایل عکس دارد تغییر می‌کند.
+          ...(row.image ? { image: row.image } : {}),
           notes: asText(row.notes) || existing?.notes || "",
           bom: bom,
           overheads:
@@ -531,6 +538,8 @@ function WarehouseBackup({
             itemName: name,
             warehouseName,
             quantity: qty,
+            // قیمت تمام‌شد ذخیره‌شده در فایل؛ نبود آن → محاسبه معمول سرور.
+            ...(row.unitCost && row.unitCost > 0 ? { unitCost: row.unitCost } : {}),
             occurredOn: todayIso(),
             notes: "بک‌آپ",
           },
@@ -547,10 +556,10 @@ function WarehouseBackup({
           unitId: null,
           unitName: asText(row.unit),
           kind: section,
-          image: null,
+          image: row.image ?? null,
           minQty: Math.max(0, asNumber(row.minQty)),
           salePrice: Math.max(0, asNumber(row.salePrice)),
-          purchasePrice: Math.max(0, asNumber(row.purchasePrice)),
+          purchasePrice: importPurchasePrice(row, undefined),
           notes: asText(row.notes),
         });
       }
