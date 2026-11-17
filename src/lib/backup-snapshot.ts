@@ -119,6 +119,12 @@ export function cellForSheet(value: unknown): string | number {
   return s;
 }
 
+/** SEC-06: neutralise spreadsheet formula injection in a CSV text cell. */
+export function csvSafeText(s: string): string {
+  if (/^-?\d+(\.\d+)?$/.test(s)) return s; // numeric columns arrive as strings
+  return /^[=+\-@\t\r]/.test(s) ? `'${s}` : s;
+}
+
 export function toCsv(rows: Record<string, unknown>[]): string {
   if (!rows.length) return "\uFEFF\n";
   const headers = Object.keys(rows[0]);
@@ -128,7 +134,9 @@ export function toCsv(rows: Record<string, unknown>[]): string {
       headers
         .map((h) => {
           const raw = cellForSheet(row[h]);
-          const s = String(raw);
+          // SEC-06: real numbers stay numeric; text that a spreadsheet would
+          // run as a formula (= + - @ tab CR) is prefixed with ' so it opens as text.
+          const s = typeof raw === "number" ? String(raw) : csvSafeText(raw);
           if (/[",\n\r]/.test(s)) return `"${s.replace(/"/g, '""')}"`;
           return s;
         })
