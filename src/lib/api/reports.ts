@@ -200,14 +200,9 @@ export async function loadPartySummaries(
       bump(invoiced, partyId, orig * rate);
       addImplied(implied, partyId, num(r.inv_currency_id ?? r.currency_id), orig, orig * rate);
     }
-    const extras = await sql<{ customer_id: number | null; cash_included_base: unknown; occurred_on: string }>`
-      select customer_id, cash_included_base, occurred_on from sale_invoices
-      where user_id = ${userId} and cash_included_base > 0
-    `;
-    for (const e of extras) {
-      if (e.customer_id == null) continue;
-      if (!inRange(text(e.occurred_on), from, to)) continue;
-      bump(invoiced, num(e.customer_id), num(e.cash_included_base));
+    for (const e of await loadCashIncluded(sql, userId)) {
+      if (!inRange(e.occurredOn, from, to)) continue;
+      bump(invoiced, e.customerId, e.amountBase);
     }
     const pays = await sql<Record<string, unknown>>`
       select p.party_id, p.amount, p.currency_id, p.occurred_on, p.kind, p.fx_rate, c.rate_to_base
@@ -605,209 +600,151 @@ async function loadCashPartyStatement(
   };
 }
 
-export const getPartyStatement = createServerFn({ method: "POST" })
-  .middleware([authMiddleware])
-  .validator((d: { kind: "customer" | "vendor"; partyId?: number | null; from?: string | null; to?: string | null }) => d)
-  .handler(async ({ context, data }) => {
-    const sql = await sqlOf();
-    await requireProfile(sql, context.userId);
-    const { parties: partyRows, summaries, rates, implied } = await loadPartySummaries(
+/** Statement of one party (or the all-parties summary). Exported for tests (ACC-04). */
+/** ACC-04: cash included in sale invoices (base currency) — one source for summary and detail. */
+export async function loadCashIncluded(
+  sql: Sql,
+  userId: string,
+  customerId?: number | null,
+): Promise<{ invoiceId: number; invoiceNo: string; customerId: number; occurredOn: string; amountBase: number }[]> {
+  const rows = await sql<Record<string, unknown>>`
+    select id, invoice_no, customer_id, occurred_on, cash_included_base from sale_invoices
+    where user_id = ${userId} and cash_included_base > 0 and customer_id is not null
+      and (${customerId ?? null}::bigint is null or customer_id = ${customerId ?? null}::bigint)
+    order by occurred_on desc, id desc
+  `;
+  return rows.map((r) => ({
+    invoiceId: num(r.id),
+    invoiceNo: text(r.invoice_no),
+    customerId: num(r.customer_id),
+    occurredOn: text(r.occurred_on),
+    amountBase: num(r.cash_included_base),
+  }));
+}
+
+export async function partyStatementTx(
+  sql: Sql,
+  userId: string,
+  data: { kind: "customer" | "vendor"; partyId?: number | null; from?: string | null; to?: string | null },
+) {
+  const { parties: partyRows, summaries, rates, implied } = await loadPartySummaries(
+    sql,
+    userId,
+    data.kind,
+    data.from,
+    data.to,
+  );
+  const catalogs = await loadCatalogs(sql, userId);
+  const cashParties = catalogs.accounts
+    .filter((a) => a.kind === "counterparty")
+    .map((a) => ({ id: cashPartyOptionId(a.id), name: `${a.name} (نقدی)` }));
+  const parties = [...partyRows, ...cashParties];
+  const cashAccountId = accountIdFromCashOption(data.partyId);
+  if (cashAccountId != null) {
+    return loadCashPartyStatement(
       sql,
-      context.userId,
+      userId,
       data.kind,
+      cashAccountId,
       data.from,
       data.to,
+      parties,
+      summaries,
     );
-    const catalogs = await loadCatalogs(sql, context.userId);
-    const cashParties = catalogs.accounts
-      .filter((a) => a.kind === "counterparty")
-      .map((a) => ({ id: cashPartyOptionId(a.id), name: `${a.name} (نقدی)` }));
-    const parties = [...partyRows, ...cashParties];
-    const cashAccountId = accountIdFromCashOption(data.partyId);
-    if (cashAccountId != null) {
-      return loadCashPartyStatement(
-        sql,
-        context.userId,
-        data.kind,
-        cashAccountId,
-        data.from,
-        data.to,
-        parties,
-        summaries,
-      );
-    }
-    if (!data.partyId) {
-      const expenseDebts =
-        data.kind === "vendor" ? await loadExpenseDebts(sql, context.userId, data.from, data.to) : [];
-      const customerCredit =
+  }
+  if (!data.partyId) {
+    const expenseDebts =
+      data.kind === "vendor" ? await loadExpenseDebts(sql, userId, data.from, data.to) : [];
+    const customerCredit =
+      data.kind === "vendor"
+        ? (await loadPartySummaries(sql, userId, "customer", data.from, data.to)).summaries
+            .filter((s) => s.remainingBase < -1e-9)
+            .map((s) => ({
+              ...s,
+              name: `${s.name} (طلب از شرکت)`,
+              remainingBase: Math.abs(s.remainingBase),
+            }))
+        : [];
+    const prepaid =
+      data.kind === "customer"
+        ? (await loadPartySummaries(sql, userId, "vendor", data.from, data.to)).summaries
+            .filter((s) => s.remainingBase < -1e-9)
+            .map((s) => ({
+              ...s,
+              remainingBase: Math.abs(s.remainingBase),
+              prepaid: true as const,
+            }))
+        : [];
+    return {
+      parties,
+      summaries:
         data.kind === "vendor"
-          ? (await loadPartySummaries(sql, context.userId, "customer", data.from, data.to)).summaries
-              .filter((s) => s.remainingBase < -1e-9)
-              .map((s) => ({
-                ...s,
-                name: `${s.name} (طلب از شرکت)`,
-                remainingBase: Math.abs(s.remainingBase),
-              }))
-          : [];
-      const prepaid =
-        data.kind === "customer"
-          ? (await loadPartySummaries(sql, context.userId, "vendor", data.from, data.to)).summaries
-              .filter((s) => s.remainingBase < -1e-9)
-              .map((s) => ({
-                ...s,
-                remainingBase: Math.abs(s.remainingBase),
-                prepaid: true as const,
-              }))
-          : [];
-      return {
-        parties,
-        summaries:
-          data.kind === "vendor"
-            ? [...summaries.filter((s) => s.remainingBase > 1e-9), ...customerCredit]
-            : [...summaries.filter((s) => s.remainingBase > 1e-9), ...prepaid],
-        invoices: [] as (SaleLedgerRow | PurchaseLedgerRow)[],
-        payments: [] as PartyPayment[],
-        invoiced: 0,
-        paid: 0,
-        remaining: 0,
-        partyName: "",
-        expenseDebts,
-      };
-    }
+          ? [...summaries.filter((s) => s.remainingBase > 1e-9), ...customerCredit]
+          : [...summaries.filter((s) => s.remainingBase > 1e-9), ...prepaid],
+      invoices: [] as (SaleLedgerRow | PurchaseLedgerRow)[],
+      payments: [] as PartyPayment[],
+      invoiced: 0,
+      paid: 0,
+      remaining: 0,
+      partyName: "",
+      expenseDebts,
+    };
+  }
 
-    const items = await sql<Record<string, unknown>>`select id, name, kind from items where user_id = ${context.userId}`;
-    const itemById = new Map(items.map((i) => [num(i.id), i]));
-    const itemByName = new Map(items.map((i) => [text(i.name), i]));
-    const party = parties.find((p) => p.id === data.partyId);
-    const partyName = party?.name ?? "";
+  const items = await sql<Record<string, unknown>>`select id, name, kind from items where user_id = ${userId}`;
+  const itemById = new Map(items.map((i) => [num(i.id), i]));
+  const itemByName = new Map(items.map((i) => [text(i.name), i]));
+  const party = parties.find((p) => p.id === data.partyId);
+  const partyName = party?.name ?? "";
 
-    const payRows = await sql<Record<string, unknown>>`
-      select p.*, c.symbol as currency_symbol, c.rate_to_base, a.name as account_name, pt.name as party_name
-      from party_payments p
-      join currencies c on c.id = p.currency_id and c.user_id = p.user_id
-      left join accounts a on a.id = p.account_id and a.user_id = p.user_id
-      join parties pt on pt.id = p.party_id and pt.user_id = p.user_id
-      where p.user_id = ${context.userId} and p.party_id = ${data.partyId}
-      order by p.occurred_on desc, p.id desc
+  const payRows = await sql<Record<string, unknown>>`
+    select p.*, c.symbol as currency_symbol, c.rate_to_base, a.name as account_name, pt.name as party_name
+    from party_payments p
+    join currencies c on c.id = p.currency_id and c.user_id = p.user_id
+    left join accounts a on a.id = p.account_id and a.user_id = p.user_id
+    join parties pt on pt.id = p.party_id and pt.user_id = p.user_id
+    where p.user_id = ${userId} and p.party_id = ${data.partyId}
+    order by p.occurred_on desc, p.id desc
+  `;
+  const saleLink = new Map<number, number>();
+  const appliedCash = new Set<number>();
+  const payments: PartyPayment[] = payRows.map((r) => {
+    const currencyId = num(r.currency_id);
+    const amount = num(r.amount);
+    const fxRate = paymentRate(r, implied, num(r.party_id), rates);
+    const id = num(r.id);
+    if (r.sale_invoice_id != null) saleLink.set(id, num(r.sale_invoice_id));
+    if (r.applied_sale_id != null) appliedCash.add(id);
+    return {
+      id,
+      partyId: num(r.party_id),
+      partyName: text(r.party_name),
+      partyKind: "",
+      categoryName: "",
+      kind: text(r.kind) === "payment" ? "payment" : "receipt",
+      amount,
+      amountBase: amount * fxRate,
+      currencyId,
+      currencySymbol: text(r.currency_symbol) || "؋",
+      fxRate,
+      accountId: r.account_id == null ? null : num(r.account_id),
+      accountName: text(r.account_name),
+      receiptNo: text(r.receipt_no),
+      occurredOn: text(r.occurred_on),
+      notes: text(r.notes),
+    };
+  });
+
+  if (data.kind === "customer") {
+    const sales = await sql<Record<string, unknown>>`
+      select s.*, i.kind as item_kind, inv.fx_enabled, inv.fx_rate, inv.currency_id as inv_currency_id
+      from sales s
+      left join items i on i.id = s.item_id and i.user_id = s.user_id
+      left join sale_invoices inv on inv.id = s.invoice_id and inv.user_id = s.user_id
+      where s.user_id = ${userId} and s.customer_id = ${data.partyId}
+      order by s.occurred_on desc, s.id desc
     `;
-    const saleLink = new Map<number, number>();
-    const appliedCash = new Set<number>();
-    const payments: PartyPayment[] = payRows.map((r) => {
-      const currencyId = num(r.currency_id);
-      const amount = num(r.amount);
-      const fxRate = paymentRate(r, implied, num(r.party_id), rates);
-      const id = num(r.id);
-      if (r.sale_invoice_id != null) saleLink.set(id, num(r.sale_invoice_id));
-      if (r.applied_sale_id != null) appliedCash.add(id);
-      return {
-        id,
-        partyId: num(r.party_id),
-        partyName: text(r.party_name),
-        partyKind: "",
-        categoryName: "",
-        kind: text(r.kind) === "payment" ? "payment" : "receipt",
-        amount,
-        amountBase: amount * fxRate,
-        currencyId,
-        currencySymbol: text(r.currency_symbol) || "؋",
-        fxRate,
-        accountId: r.account_id == null ? null : num(r.account_id),
-        accountName: text(r.account_name),
-        receiptNo: text(r.receipt_no),
-        occurredOn: text(r.occurred_on),
-        notes: text(r.notes),
-      };
-    });
-
-    if (data.kind === "customer") {
-      const sales = await sql<Record<string, unknown>>`
-        select s.*, i.kind as item_kind, inv.fx_enabled, inv.fx_rate, inv.currency_id as inv_currency_id
-        from sales s
-        left join items i on i.id = s.item_id and i.user_id = s.user_id
-        left join sale_invoices inv on inv.id = s.invoice_id and inv.user_id = s.user_id
-        where s.user_id = ${context.userId} and s.customer_id = ${data.partyId}
-        order by s.occurred_on desc, s.id desc
-      `;
-      const invoices: SaleLedgerRow[] = sales.filter((r) => isFinalStatus(r.status)).map((r) => {
-        const kind = resolveKind(r, itemById, itemByName);
-        const rate = invRate(r, rates);
-        const qty = num(r.quantity);
-        const price = num(r.unit_price) * rate;
-        return {
-          id: num(r.id),
-          occurredOn: text(r.occurred_on),
-          invoiceNo: invoiceOf("فروش", num(r.id), r.invoice_no),
-          itemKind: kind,
-          itemKindLabel: itemKindLabel(kind),
-          itemName: text(r.item_name),
-          quantity: qty,
-          unitPriceBase: price,
-          totalBase: qty * price,
-        };
-      });
-      for (const p of payments) {
-        if (p.kind !== "payment" || saleLink.has(p.id) || appliedCash.has(p.id)) continue;
-        invoices.push({
-          id: -p.id,
-          occurredOn: p.occurredOn,
-          invoiceNo: p.receiptNo || "بردگی نقدی",
-          itemKind: "raw",
-          itemKindLabel: "بردگی نقدی",
-          itemName: p.notes.trim() || "بردگی نقدی",
-          quantity: 1,
-          unitPriceBase: p.amountBase,
-          totalBase: p.amountBase,
-        });
-      }
-      const invoiced = invoices.reduce((s, r) => s + r.totalBase, 0);
-      const settledByInvoice = new Map<number, number>();
-      const heads = await sql<Record<string, unknown>>`
-        select i.id, i.fx_enabled, i.fx_rate, i.currency_id, i.received_amount, i.received_fx_rate,
-          i.refund_amount, i.cash_included_base, coalesce(sum(s.quantity * s.unit_price), 0) as goods
-        from sale_invoices i
-        left join sales s on s.invoice_id = i.id and s.user_id = i.user_id
-        where i.user_id = ${context.userId} and i.customer_id = ${data.partyId}
-        group by i.id
-      `;
-      for (const h of heads) {
-        if (num(h.refund_amount) <= 1e-9) continue;
-        const rate = invRate(h, rates);
-        const invoiceBase = num(h.goods) * rate + num(h.cash_included_base);
-        const recvRate = num(h.received_fx_rate) > 0 ? num(h.received_fx_rate) : rate;
-        const receivedBase = num(h.received_amount) * recvRate;
-        settledByInvoice.set(num(h.id), Math.min(invoiceBase, Math.max(0, receivedBase - num(h.refund_amount))));
-      }
-      const shown = payments
-        .filter((p) => p.kind === "receipt")
-        .map((p) => {
-          const invoiceId = saleLink.get(p.id);
-          const settled = invoiceId == null ? undefined : settledByInvoice.get(invoiceId);
-          if (settled == null) return p;
-          return { ...p, amount: settled, amountBase: settled, currencySymbol: "؋", fxRate: 1 };
-        });
-      const paid = shown.reduce((s, p) => s + p.amountBase, 0);
-      return {
-        parties,
-        summaries,
-        invoices,
-        payments: shown,
-        invoiced,
-        paid,
-        remaining: invoiced - paid,
-        partyName,
-        expenseDebts: [] as ExpenseDebt[],
-      };
-    }
-
-    const purchases = await sql<Record<string, unknown>>`
-      select p.*, i.kind as item_kind, inv.fx_enabled, inv.fx_rate, inv.currency_id as inv_currency_id
-      from purchases p
-      left join items i on i.id = p.item_id and i.user_id = p.user_id
-      left join purchase_invoices inv on inv.id = p.invoice_id and inv.user_id = p.user_id
-      where p.user_id = ${context.userId} and p.vendor_id = ${data.partyId}
-      order by p.occurred_on desc, p.id desc
-    `;
-    const invoices: PurchaseLedgerRow[] = purchases.filter((r) => isFinalStatus(r.status)).map((r) => {
+    const invoices: SaleLedgerRow[] = sales.filter((r) => isFinalStatus(r.status)).map((r) => {
       const kind = resolveKind(r, itemById, itemByName);
       const rate = invRate(r, rates);
       const qty = num(r.quantity);
@@ -815,7 +752,7 @@ export const getPartyStatement = createServerFn({ method: "POST" })
       return {
         id: num(r.id),
         occurredOn: text(r.occurred_on),
-        invoiceNo: invoiceOf("خرید", num(r.id), r.invoice_no),
+        invoiceNo: invoiceOf("فروش", num(r.id), r.invoice_no),
         itemKind: kind,
         itemKindLabel: itemKindLabel(kind),
         itemName: text(r.item_name),
@@ -824,22 +761,125 @@ export const getPartyStatement = createServerFn({ method: "POST" })
         totalBase: qty * price,
       };
     });
+    for (const p of payments) {
+      if (p.kind !== "payment" || saleLink.has(p.id) || appliedCash.has(p.id)) continue;
+      invoices.push({
+        id: -p.id,
+        occurredOn: p.occurredOn,
+        invoiceNo: p.receiptNo || "بردگی نقدی",
+        itemKind: "raw",
+        itemKindLabel: "بردگی نقدی",
+        itemName: p.notes.trim() || "بردگی نقدی",
+        quantity: 1,
+        unitPriceBase: p.amountBase,
+        totalBase: p.amountBase,
+      });
+    }
+    // ACC-04: cash handed to the customer inside a sale invoice is part of
+    // what they owe — the summary counts it, so the rows must show it too.
+    for (const c of await loadCashIncluded(sql, userId, data.partyId)) {
+      invoices.push({
+        id: -1_000_000_000 - c.invoiceId,
+        occurredOn: c.occurredOn,
+        invoiceNo: c.invoiceNo,
+        itemKind: "raw",
+        itemKindLabel: "بردگی نقدی",
+        itemName: `بردگی نقدی شامل فاکتور ${c.invoiceNo}`.trim(),
+        quantity: 1,
+        unitPriceBase: c.amountBase,
+        totalBase: c.amountBase,
+      });
+    }
     const invoiced = invoices.reduce((s, r) => s + r.totalBase, 0);
-    const paid = payments.reduce(
-      (s, p) => s + signedPaidBase("vendor", p.kind, p.amountBase),
-      0,
-    );
+    const settledByInvoice = new Map<number, number>();
+    const heads = await sql<Record<string, unknown>>`
+      select i.id, i.fx_enabled, i.fx_rate, i.currency_id, i.received_amount, i.received_fx_rate,
+        i.refund_amount, i.cash_included_base, coalesce(sum(s.quantity * s.unit_price), 0) as goods
+      from sale_invoices i
+      left join sales s on s.invoice_id = i.id and s.user_id = i.user_id
+      where i.user_id = ${userId} and i.customer_id = ${data.partyId}
+      group by i.id
+    `;
+    for (const h of heads) {
+      if (num(h.refund_amount) <= 1e-9) continue;
+      const rate = invRate(h, rates);
+      const invoiceBase = num(h.goods) * rate + num(h.cash_included_base);
+      const recvRate = num(h.received_fx_rate) > 0 ? num(h.received_fx_rate) : rate;
+      const receivedBase = num(h.received_amount) * recvRate;
+      settledByInvoice.set(num(h.id), Math.min(invoiceBase, Math.max(0, receivedBase - num(h.refund_amount))));
+    }
+    const shown = payments
+      .filter((p) => p.kind === "receipt")
+      .map((p) => {
+        const invoiceId = saleLink.get(p.id);
+        const settled = invoiceId == null ? undefined : settledByInvoice.get(invoiceId);
+        if (settled == null) return p;
+        return { ...p, amount: settled, amountBase: settled, currencySymbol: "؋", fxRate: 1 };
+      });
+    const paid = shown.reduce((s, p) => s + p.amountBase, 0);
     return {
       parties,
       summaries,
       invoices,
-      payments: payments.filter((p) => p.kind === "payment"),
+      payments: shown,
       invoiced,
       paid,
       remaining: invoiced - paid,
       partyName,
-      expenseDebts: await loadExpenseDebts(sql, context.userId),
+      expenseDebts: [] as ExpenseDebt[],
     };
+  }
+
+  const purchases = await sql<Record<string, unknown>>`
+    select p.*, i.kind as item_kind, inv.fx_enabled, inv.fx_rate, inv.currency_id as inv_currency_id
+    from purchases p
+    left join items i on i.id = p.item_id and i.user_id = p.user_id
+    left join purchase_invoices inv on inv.id = p.invoice_id and inv.user_id = p.user_id
+    where p.user_id = ${userId} and p.vendor_id = ${data.partyId}
+    order by p.occurred_on desc, p.id desc
+  `;
+  const invoices: PurchaseLedgerRow[] = purchases.filter((r) => isFinalStatus(r.status)).map((r) => {
+    const kind = resolveKind(r, itemById, itemByName);
+    const rate = invRate(r, rates);
+    const qty = num(r.quantity);
+    const price = num(r.unit_price) * rate;
+    return {
+      id: num(r.id),
+      occurredOn: text(r.occurred_on),
+      invoiceNo: invoiceOf("خرید", num(r.id), r.invoice_no),
+      itemKind: kind,
+      itemKindLabel: itemKindLabel(kind),
+      itemName: text(r.item_name),
+      quantity: qty,
+      unitPriceBase: price,
+      totalBase: qty * price,
+    };
+  });
+  const invoiced = invoices.reduce((s, r) => s + r.totalBase, 0);
+  const paid = payments.reduce(
+    (s, p) => s + signedPaidBase("vendor", p.kind, p.amountBase),
+    0,
+  );
+  return {
+    parties,
+    summaries,
+    invoices,
+    payments: payments.filter((p) => p.kind === "payment"),
+    invoiced,
+    paid,
+    remaining: invoiced - paid,
+    partyName,
+    expenseDebts: await loadExpenseDebts(sql, userId),
+  };
+}
+
+export const getPartyStatement = createServerFn({ method: "POST" })
+  .middleware([authMiddleware])
+  .validator((d: { kind: "customer" | "vendor"; partyId?: number | null; from?: string | null; to?: string | null }) => d)
+  .handler(async ({ context, data }) => {
+    const sql = await sqlOf();
+    await requireProfile(sql, context.userId);
+    return partyStatementTx(sql, context.userId, data);
   });
 
 export const listOutstandingParties = createServerFn({ method: "POST" })
