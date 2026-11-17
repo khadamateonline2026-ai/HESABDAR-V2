@@ -408,17 +408,6 @@ export const deleteItemCategory = createServerFn({ method: "POST" })
     return { ok: true as const };
   });
 
-export const saveItemType = createServerFn({ method: "POST" })
-  .middleware([authMiddleware])
-  .validator((d: { name: string }) => validInput(d))
-  .handler(async ({ context, data }) => {
-    const { sql } = await guard(context.userId, "purchase");
-    const rows = await sql<{ id: number }>`
-      insert into item_types (user_id, name) values (${context.userId}, ${data.name.trim()}) returning id
-    `;
-    return { id: rows[0].id };
-  });
-
 export const saveItem = createServerFn({ method: "POST" })
   .middleware([authMiddleware])
   .validator(

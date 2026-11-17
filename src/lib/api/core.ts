@@ -5,7 +5,7 @@ import { authMiddleware } from "@/lib/auth/middleware";
 import { withTransaction } from "@/lib/db";
 import { DEFAULT_SETTINGS, type Role } from "@/lib/types";
 import { assertPinShape, hashPin } from "@/lib/auth/pin-hash";
-import { assertRoleNotLockedDb, attemptRoleSecret, forgetCachedRolePinVersion, getRolePinVersion, verifyRolePin } from "./role-pin";
+import { assertRoleNotLockedDb, forgetCachedRolePinVersion, getRolePinVersion, verifyRolePin } from "./role-pin";
 import { resolveOnboardingIdentity } from "@/lib/auth/onboarding-identity";
 import { assertSafeImageDataUrl } from "@/lib/auth/image-dataurl";
 import {
@@ -248,11 +248,6 @@ export const changeRole = createServerFn({ method: "POST" })
     return { ok: true as const, roleToken };
   });
 
-function resetHash(userId: string, code: string): string {
-  return createHash("sha256").update(`${userId}:${code}`).digest("hex");
-}
-
-
 const ROLE_RESET_TTL_MS = 30 * 60 * 1000;
 const ROLE_FA: Record<string, string> = { accountant: "حسابدار", seller: "فروشنده", supervisor: "ناظر" };
 
@@ -373,45 +368,3 @@ export const applyRoleResetLink = createServerFn({ method: "POST" })
     return { ok: true as const, role: ROLE_FA[role] };
   });
 
-export const applyRoleReset = createServerFn({ method: "POST" })
-  .middleware([authMiddleware])
-  .validator((d: { emailCode: string; supervisor: string; accountant: string; seller: string }) => validInput(d))
-  .handler(async ({ context, data }) => {
-    const supervisor = data.supervisor.trim();
-    const accountant = data.accountant.trim();
-    const seller = data.seller.trim();
-    const emailCode = data.emailCode.trim();
-    if (!emailCode) throw new Error("کد ایمیل لازم است");
-    assertPinShape(supervisor);
-    assertPinShape(accountant);
-    assertPinShape(seller);
-    const sql = await sqlBeforeRole();
-    // SEC-03: the emailed code goes through the same persistent limiter.
-    await attemptRoleSecret(
-      sql,
-      context.userId,
-      (row) => {
-        const exp = row.role_reset_exp ? new Date(row.role_reset_exp).getTime() : 0;
-        return Boolean(row.role_reset_hash) && exp >= Date.now() && row.role_reset_hash === resetHash(context.userId, emailCode);
-      },
-      "کد ایمیل نادرست یا منقضی است",
-    );
-    const hashedSupervisor = hashPin(supervisor);
-    const hashedAccountant = hashPin(accountant);
-    const hashedSeller = hashPin(seller);
-    await sql`
-      update app_settings set
-        role_code_supervisor = ${hashedSupervisor},
-        role_code_accountant = ${hashedAccountant},
-        role_code_seller = ${hashedSeller},
-        role_codes_hashed = true,
-        role_reset_hash = null,
-        role_reset_exp = null,
-        role_fail_count = 0,
-        role_lock_until = null,
-        role_pin_version = role_pin_version + 1
-      where user_id = ${context.userId}
-    `;
-    await forgetCachedRolePinVersion(context.userId);
-    return { ok: true as const };
-  });

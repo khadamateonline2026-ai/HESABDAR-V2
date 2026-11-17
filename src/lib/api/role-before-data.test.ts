@@ -48,7 +48,7 @@ test("SEC-02: workspace data access refuses to start before a role is unlocked",
 
 test("SEC-02 invariant: only the role gate reads before a role; nothing bypasses sqlOf", () => {
   const dir = join(process.cwd(), "src/lib/api");
-  const allowed = ["getBootstrap", "completeOnboarding", "changeRole", "requestRoleReset", "applyRoleResetLink", "applyRoleReset"];
+  const allowed = ["getBootstrap", "completeOnboarding", "changeRole", "requestRoleReset", "applyRoleResetLink"];
   for (const f of readdirSync(dir).filter((n) => n.endsWith(".ts") && !n.endsWith(".test.ts"))) {
     const src = readFileSync(join(dir, f), "utf8");
     if (f !== "helpers.ts" && f !== "idempotency.ts") assert.doesNotMatch(src, /\bgetSql\(/, `${f} must use sqlOf()`);

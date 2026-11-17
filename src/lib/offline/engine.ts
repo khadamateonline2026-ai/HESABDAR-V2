@@ -38,7 +38,7 @@ const QUEUE = "queue";
 const CACHE = "gets";
 const SESSION_KEY = "hesabdar-offline-session";
 const OWNER_KEY = "hesabdar-offline-owner";
-const SAVE_URL = /save(SaleInvoice|PurchaseInvoice|PartyPayment|CatalogItem|OpeningStock|Sale|Purchase)|receivePurchaseInvoice/;
+const SAVE_URL = /save(SaleInvoice|PurchaseInvoice|PartyPayment|CatalogItem|OpeningStock)|receivePurchaseInvoice/;
 const ONLINE_ONLY = /sign-up|change-password|reset-password|forget-password|request-password-reset/;
 
 function serverFnExport(url: string) {

@@ -30,3 +30,18 @@ test("DEL-02: unused exported helpers are removed", async () => {
     assert.doesNotMatch(readFileSync(file, "utf8"), new RegExp(`export (async )?function ${name}\\b`), `${name} in ${file}`);
   }
 });
+
+test("DEL-03: server functions with no caller are removed", async () => {
+  const { readFileSync } = await import("node:fs");
+  const where = {
+    "src/lib/api/ops.ts": ["listPurchases", "savePurchase", "deletePurchase", "listSales", "saveSale", "deleteSale", "getReports"],
+    "src/lib/api/core.ts": ["applyRoleReset"],
+    "src/lib/api/setup.ts": ["saveItemType"],
+    "src/lib/api/workspace.ts": ["listCloudBackups", "restoreCloudBackup", "deleteCloudBackup", "saveCloudBackup"],
+  };
+  for (const [file, names] of Object.entries(where)) {
+    const src = readFileSync(file, "utf8");
+    for (const n of names) assert.doesNotMatch(src, new RegExp(`export const ${n} =`), `${n} in ${file}`);
+  }
+  assert.doesNotMatch(readFileSync("src/lib/api/core.ts", "utf8"), /function resetHash\(/);
+});

@@ -109,8 +109,6 @@ test("STR-04 invariant: every queued save is idempotent and transactional; the e
     ["reports.ts", "savePartyPayment"],
     ["inventory.ts", "saveCatalogItem"],
     ["finance.ts", "saveOpeningStock"],
-    ["ops.ts", "saveSale"],
-    ["ops.ts", "savePurchase"],
   ];
   for (const [file, name] of saves) {
     const src = api(file);

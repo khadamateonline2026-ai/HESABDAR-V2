@@ -47,7 +47,8 @@ test("SEC-04 fix: a PIN change (version bump) invalidates earlier role tokens", 
 test("SEC-04 invariant: every PIN change bumps role_pin_version and middleware checks it", () => {
   const read = (p: string) => readFileSync(join(process.cwd(), p), "utf8");
   const core = read("src/lib/api/core.ts");
-  assert.equal((core.match(/role_pin_version = role_pin_version \+ 1/g) ?? []).length, 2, "reset link + email reset");
+  // DEL-03: the old email-code reset (applyRoleReset) was removed; the reset link is the only path.
+  assert.equal((core.match(/role_pin_version = role_pin_version \+ 1/g) ?? []).length, 1, "reset link");
   assert.match(read("src/lib/api/workspace.ts"), /role_pin_version = app_settings\.role_pin_version \+ 1/);
   assert.match(read("src/lib/auth/middleware.ts"), /slotIfCurrent\(claims, await currentRolePinVersion\(userId\)\)/);
 });

@@ -241,67 +241,6 @@ export const deleteOnlineBackup = createServerFn({ method: "POST" })
     return { ok: true as const };
   });
 
-export const saveCloudBackup = createServerFn({ method: "POST" })
-  .middleware([authMiddleware])
-  .validator((d: { label?: string; kind?: "manual" | "auto" }) => validInput(d))
-  .handler(async ({ context, data }) => {
-    const sql = await sqlOf();
-    await requireWrite(sql, context.userId, "settings");
-    const dump = await dumpWorkspaceConsistent(context.userId);
-    const kind = data.kind === "auto" ? "auto" : "manual";
-    const label = (data.label || "").trim() || `کلود ${new Date().toISOString().slice(0, 16).replace("T", " ")}`;
-    const rows = await sql<{ id: number }>`
-      insert into cloud_backups (user_id, label, kind, payload)
-      values (${context.userId}, ${label}, ${kind}, ${JSON.stringify(dump)})
-      returning id
-    `;
-    return { id: rows[0].id };
-  });
-
-export const listCloudBackups = createServerFn({ method: "GET" })
-  .middleware([authMiddleware])
-  .handler(async ({ context }) => {
-    const sql = await sqlOf();
-    await requireProfile(sql, context.userId);
-    const rows = await sql<Record<string, unknown>>`
-      select id, label, kind, created_at from cloud_backups
-      where user_id = ${context.userId}
-      order by created_at desc, id desc
-    `;
-    return rows.map((r) => ({
-      id: num(r.id),
-      label: text(r.label),
-      kind: text(r.kind) === "auto" ? ("auto" as const) : ("manual" as const),
-      createdAt: text(r.created_at),
-    }));
-  });
-
-export const restoreCloudBackup = createServerFn({ method: "POST" })
-  .middleware([authMiddleware])
-  .validator((d: { id: number; code: string; confirm?: string }) => validInput(d))
-  .handler(async ({ context, data }) => {
-    const sql = await sqlOf();
-    await requireWrite(sql, context.userId, "settings");
-    await assertAccountantPin(sql, context.userId, data.code);
-    const rows = await sql<{ payload: string }>`
-      select payload from cloud_backups where id = ${data.id} and user_id = ${context.userId}
-    `;
-    if (!rows[0]) throw new Error("پشتیبان یافت نشد");
-    await restoreWorkspace(sql, context.userId, rows[0].payload, { confirm: data.confirm });
-    return { ok: true as const };
-  });
-
-export const deleteCloudBackup = createServerFn({ method: "POST" })
-  .middleware([authMiddleware])
-  .validator((d: { id: number; code: string }) => validInput(d))
-  .handler(async ({ context, data }) => {
-    const sql = await sqlOf();
-    await requireWrite(sql, context.userId, "settings");
-    await assertAccountantPin(sql, context.userId, data.code);
-    await sql`delete from cloud_backups where id = ${data.id} and user_id = ${context.userId}`;
-    return { ok: true as const };
-  });
-
 const RESET_KEEP = new Set(["companies", "app_settings", "staff_users"]);
 
 export const RESET_SNAPSHOT_PREFIX = "خودکار پیش از ریست";
