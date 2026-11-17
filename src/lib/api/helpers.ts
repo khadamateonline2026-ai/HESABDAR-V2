@@ -670,20 +670,16 @@ export async function dumpWorkspace(sql: Sql, userId: string) {
   };
 }
 
+/**
+ * STR-05: mutes the activity log for the CURRENT TRANSACTION only. Outside a
+ * transaction it has no lasting effect, so a crash can never leave it muted.
+ */
 export async function muteActivityLog(sql: Sql, userId: string) {
-  try {
-    await sql`insert into activity_log_mute (user_id) values (${userId}) on conflict (user_id) do nothing`;
-  } catch {
-    /* ignore */
-  }
+  await sql`select set_config('hesabdar.mute_log', ${userId}, true)`;
 }
 
-export async function unmuteActivityLog(sql: Sql, userId: string) {
-  try {
-    await sql`delete from activity_log_mute where user_id = ${userId}`;
-  } catch {
-    /* ignore */
-  }
+export async function unmuteActivityLog(sql: Sql, _userId: string) {
+  await sql`select set_config('hesabdar.mute_log', '', true)`;
 }
 
 export async function logActivity(
@@ -692,8 +688,8 @@ export async function logActivity(
   row: { area: string; action: string; title: string; detail?: string },
 ) {
   try {
-    const muted = await sql`select 1 from activity_log_mute where user_id = ${userId} limit 1`;
-    if (muted[0]) return;
+    const muted = await sql<{ m: string | null }>`select current_setting('hesabdar.mute_log', true) as m`;
+    if (muted[0]?.m === userId) return;
     await sql`
       insert into activity_log (user_id, area, action, title, detail)
       values (${userId}, ${row.area}, ${row.action}, ${row.title}, ${row.detail ?? ""})
@@ -736,9 +732,12 @@ export async function restoreWorkspace(
     throw new Error("این فایل بک‌آپ گدام است؛ از صفحه گدام‌ها → بک آپ → آپلود وارد کنید");
   }
   const backup = validateWorkspaceBackup(parsed, WORKSPACE_TABLES);
-  await muteActivityLog(sql, userId);
   try {
-    return await withTransaction((tx) => restoreWorkspaceTx(tx, userId, backup, opts.snapshotLabel));
+    return await withTransaction(async (tx) => {
+      // STR-05: muted inside the restore's own transaction only.
+      await muteActivityLog(tx, userId);
+      return restoreWorkspaceTx(tx, userId, backup, opts.snapshotLabel);
+    });
   } catch (e) {
     if (typeof e === "object" && e !== null && (e as { code?: string }).code === "23505") {
       throw new Error(
@@ -746,8 +745,6 @@ export async function restoreWorkspace(
       );
     }
     throw e;
-  } finally {
-    await unmuteActivityLog(sql, userId);
   }
 }
 

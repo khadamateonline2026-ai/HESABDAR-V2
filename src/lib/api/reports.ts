@@ -1335,12 +1335,18 @@ export const listActivityLog = createServerFn({ method: "GET" })
 
 export const deleteActivityLog = createServerFn({ method: "POST" })
   .middleware([authMiddleware])
-  .validator((d: { id: number }) => validInput(d))
+  .validator((d: { id: number; code: string }) => validInput(d))
   .handler(async ({ context, data }) => {
     const { sql } = await guard(context.userId, "reports");
-    await sql`delete from activity_log where id = ${data.id} and user_id = ${context.userId}`;
+    await deleteActivityLogEntry(sql, context.userId, data.id, data.code);
     return { ok: true as const };
   });
+
+/** STR-05: removing a log entry needs the accountant code, like the full reset. */
+export async function deleteActivityLogEntry(sql: Sql, userId: string, id: number, code: string): Promise<void> {
+  await assertAccountantPin(sql, userId, code);
+  await sql`delete from activity_log where id = ${id} and user_id = ${userId}`;
+}
 
 export const resetActivityLog = createServerFn({ method: "POST" })
   .middleware([authMiddleware])

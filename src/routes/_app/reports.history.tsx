@@ -3,7 +3,6 @@ import { useQuery } from "@tanstack/react-query";
 import { useMemo, useState } from "react";
 import { toast } from "sonner";
 import { ConfirmAccountantReset } from "@/components/confirm-accountant";
-import { ConfirmDelete } from "@/components/confirm-delete";
 import { FilterTable } from "@/components/filter-table";
 import { IconBtn } from "@/components/icon-btn";
 import { useAppData } from "@/components/layout/app-shell";
@@ -94,14 +93,15 @@ function HistoryReport() {
           ]}
         />
       </ReportSheet>
-      <ConfirmDelete
+      <ConfirmAccountantReset
         open={Boolean(del)}
         title="حذف از تاریخچه"
-        message="فقط همین ردیف از تاریخچه حذف می‌شود. محاسبات برنامه تغییر نمی‌کند."
+        message="فقط همین ردیف از تاریخچه حذف می‌شود. محاسبات برنامه تغییر نمی‌کند. کد حسابدار را وارد کنید."
+        confirmLabel="حذف"
         onClose={() => setDel(null)}
-        onConfirm={async () => {
+        onConfirm={async (code) => {
           if (!del) return;
-          await deleteActivityLog({ data: { id: del.id } });
+          await deleteActivityLog({ data: { id: del.id, code } });
           await refresh();
           toast.success("از تاریخچه حذف شد");
         }}
