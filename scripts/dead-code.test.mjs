@@ -45,3 +45,24 @@ test("DEL-03: server functions with no caller are removed", async () => {
   }
   assert.doesNotMatch(readFileSync("src/lib/api/core.ts", "utf8"), /function resetHash\(/);
 });
+
+const UNUSED_DEPS = [
+  "@hookform/resolvers", "@radix-ui/react-accordion", "@radix-ui/react-alert-dialog", "@radix-ui/react-avatar",
+  "@radix-ui/react-checkbox", "@radix-ui/react-collapsible", "@radix-ui/react-dialog", "@radix-ui/react-dropdown-menu",
+  "@radix-ui/react-label", "@radix-ui/react-popover", "@radix-ui/react-progress", "@radix-ui/react-radio-group",
+  "@radix-ui/react-scroll-area", "@radix-ui/react-select", "@radix-ui/react-separator", "@radix-ui/react-slider",
+  "@radix-ui/react-slot", "@radix-ui/react-switch", "@radix-ui/react-tabs", "@radix-ui/react-toggle",
+  "@radix-ui/react-toggle-group", "@radix-ui/react-tooltip", "@tanstack/react-table", "@tanstack/router-plugin",
+  "class-variance-authority", "cmdk", "date-fns", "react-day-picker", "react-hook-form", "react-resizable-panels",
+  "recharts", "tw-animate-css", "vaul",
+];
+
+test("DEL-04: direct dependencies nothing imports are not declared", async () => {
+  const { readFileSync } = await import("node:fs");
+  const pkg = JSON.parse(readFileSync("package.json", "utf8"));
+  const declared = { ...pkg.dependencies, ...pkg.devDependencies };
+  for (const d of UNUSED_DEPS) assert.equal(declared[d], undefined, `${d} is unused`);
+  // The Start vite plugin still brings the router plugin in as its own dependency.
+  const lock = JSON.parse(readFileSync("package-lock.json", "utf8"));
+  assert.ok(lock.packages["node_modules/@tanstack/router-plugin"], "router-plugin stays as a transitive dependency");
+});
