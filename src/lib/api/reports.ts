@@ -5,7 +5,8 @@ import { convertAmount } from "@/lib/format";
 import { fxToBase, getRoleCodes, guard, invoiceOf, isFinalStatus, itemKindLabel, itemKindOf, loadCatalogs, loadInventoryState, requireProfile, sqlOf, assertCashAvailable, assertAccountantPin } from "./helpers";
 import { loadRecurringDues } from "./ops";
 import type { Item, ModelSummary, PartyPayment, PartySummary, PurchaseLedgerRow, SaleLedgerRow } from "@/lib/types";
-import type { Sql } from "@/lib/db";
+import { withTransaction, type Sql } from "@/lib/db";
+import { deleteLinkedPayment, loadLinkedPayment, updateLinkedPayment } from "./linked-payment";
 
 function inRange(iso: string, from?: string | null, to?: string | null): boolean {
   if (from && iso < from) return false;
@@ -915,6 +916,8 @@ export const savePartyPayment = createServerFn({ method: "POST" })
       `;
       return { id: -rows[0].id };
     }
+    // ACC-03: a row created by an invoice is edited together with that invoice.
+    const linked = data.id && data.id > 0 ? await loadLinkedPayment(sql, context.userId, data.id) : null;
     if (data.kind === "payment") {
       let creditBack = 0;
       if (data.id) {
@@ -938,6 +941,21 @@ export const savePartyPayment = createServerFn({ method: "POST" })
         amountRate: storedRate,
         creditBack,
       });
+    }
+    if (linked) {
+      await withTransaction((tx) =>
+        updateLinkedPayment(tx, context.userId, linked, {
+          partyId: data.partyId,
+          kind: data.kind,
+          amount: data.amount,
+          currencyId: data.currencyId,
+          fxRate: storedRate,
+          accountId: data.accountId,
+          occurredOn: data.occurredOn,
+          notes: data.notes,
+        }),
+      );
+      return { id: linked.id };
     }
     if (data.id) {
       await sql`
@@ -979,6 +997,12 @@ export const deletePartyPayment = createServerFn({ method: "POST" })
     `;
     if (!row[0]) throw new Error("یافت نشد");
     await guard(context.userId, "payments");
+    // ACC-03: deleting an invoice's payment/receipt also un-pays the invoice, atomically.
+    const linked = await loadLinkedPayment(sql, context.userId, data.id);
+    if (linked) {
+      await withTransaction((tx) => deleteLinkedPayment(tx, context.userId, linked));
+      return { ok: true as const };
+    }
     await sql`delete from party_payments where id = ${data.id} and user_id = ${context.userId}`;
     return { ok: true as const };
   });
