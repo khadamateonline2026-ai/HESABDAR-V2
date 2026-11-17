@@ -24,13 +24,25 @@ async function settleExpenseAccount(
   const toRate = catalogs.currencies.find((c) => c.id === acc.currencyId)?.rateToBase || 1;
   let available = acc.balance;
   if (args.expenseId) {
-    const old = await sql<{ account_id: number | null; amount: unknown; currency_id: number; as_debt: unknown }>`
-      select account_id, amount, currency_id, as_debt from expenses
+    const old = await sql<{
+      account_id: number | null;
+      amount: unknown;
+      currency_id: number;
+      as_debt: unknown;
+      fx_rate: unknown;
+      account_rate: unknown;
+    }>`
+      select account_id, amount, currency_id, as_debt, fx_rate, account_rate from expenses
       where id = ${args.expenseId} and user_id = ${userId}
     `;
     if (old[0] && !old[0].as_debt && old[0].account_id != null && num(old[0].account_id) === acc.id) {
-      const oldRate = catalogs.currencies.find((c) => c.id === num(old[0].currency_id))?.rateToBase || 1;
-      available += convertAmount(num(old[0].amount), oldRate, toRate);
+      // ACC-01: give back exactly what the balance subtracted (frozen rates).
+      const oldRate =
+        num(old[0].fx_rate) > 0
+          ? num(old[0].fx_rate)
+          : catalogs.currencies.find((c) => c.id === num(old[0].currency_id))?.rateToBase || 1;
+      const oldAccRate = num(old[0].account_rate) > 0 ? num(old[0].account_rate) : toRate;
+      available += convertAmount(num(old[0].amount), oldRate, oldAccRate);
     }
   }
   const need = convertAmount(args.amount, fromRate, toRate);

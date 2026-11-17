@@ -302,18 +302,29 @@ export async function withBalances(
   accountRows: Record<string, unknown>[],
   currencies: Currency[],
 ): Promise<Account[]> {
+  // ACC-01: every row carries the rates frozen when it was posted (migration
+  // 0029). Converting with them keeps past balances fixed when a currency rate
+  // is edited later; the current rate is only a fallback for rows saved before
+  // the snapshot columns existed (the migration backfills those).
   const [transfers, capital, openingCash, expenses, payments, workerPays] = await Promise.all([
-    sql<{ from_account_id: number; to_account_id: number; amount: unknown }>`
-      select from_account_id, to_account_id, amount from transfers where user_id = ${userId}
+    sql<{ from_account_id: number; to_account_id: number; amount: unknown; from_rate: unknown; to_rate: unknown }>`
+      select from_account_id, to_account_id, amount, from_rate, to_rate from transfers where user_id = ${userId}
     `,
-    sql<{ account_id: number; kind: string; amount: unknown; currency_id: number }>`
-      select account_id, kind, amount, currency_id from capital_moves where user_id = ${userId}
+    sql<{ account_id: number; kind: string; amount: unknown; currency_id: number; fx_rate: unknown; account_rate: unknown }>`
+      select account_id, kind, amount, currency_id, fx_rate, account_rate from capital_moves where user_id = ${userId}
     `,
-    sql<{ account_id: number; amount: unknown; currency_id: number }>`
-      select account_id, amount, currency_id from opening_cash where user_id = ${userId}
+    sql<{ account_id: number; amount: unknown; currency_id: number; fx_rate: unknown; account_rate: unknown }>`
+      select account_id, amount, currency_id, fx_rate, account_rate from opening_cash where user_id = ${userId}
     `,
-    sql<{ account_id: number | null; amount: unknown; currency_id: number; as_debt?: unknown }>`
-      select account_id, amount, currency_id, as_debt from expenses where user_id = ${userId}
+    sql<{
+      account_id: number | null;
+      amount: unknown;
+      currency_id: number;
+      as_debt?: unknown;
+      fx_rate: unknown;
+      account_rate: unknown;
+    }>`
+      select account_id, amount, currency_id, as_debt, fx_rate, account_rate from expenses where user_id = ${userId}
     `,
     sql<{
       account_id: number | null;
@@ -321,8 +332,9 @@ export async function withBalances(
       amount: unknown;
       currency_id: number;
       from_rate: unknown;
+      account_rate: unknown;
     }>`
-      select pp.account_id, pp.kind, pp.amount, pp.currency_id,
+      select pp.account_id, pp.kind, pp.amount, pp.currency_id, pp.account_rate,
         coalesce(
           nullif(pp.fx_rate, 0),
           nullif(pi.fx_rate, 0),
@@ -336,13 +348,15 @@ export async function withBalances(
       left join currencies c on c.id = pp.currency_id
       where pp.user_id = ${userId}
     `,
-    sql<{ account_id: number | null; amount: unknown }>`
-      select account_id, amount from worker_payments where user_id = ${userId}
+    sql<{ account_id: number | null; amount: unknown; account_rate: unknown }>`
+      select account_id, amount, account_rate from worker_payments where user_id = ${userId}
     `,
   ]);
 
   const rateOf = (currencyId: number) =>
     currencies.find((c) => c.id === currencyId)?.rateToBase ?? 1;
+  /** Stored snapshot when present (> 0), else today's rate. */
+  const frozen = (stored: unknown, fallback: number) => (num(stored) > 0 ? num(stored) : fallback);
 
   const byId = new Map<number, number>();
   const accCurrency = new Map<number, number>();
@@ -350,11 +364,12 @@ export async function withBalances(
     byId.set(num(a.id), num(a.opening_balance));
     accCurrency.set(num(a.id), num(a.currency_id));
   }
+  const accRateNow = (accountId: number) => rateOf(accCurrency.get(accountId) ?? 0);
   for (const r of openingCash) {
     const converted = convertAmount(
       num(r.amount),
-      rateOf(num(r.currency_id)),
-      rateOf(accCurrency.get(r.account_id) ?? 0),
+      frozen(r.fx_rate, rateOf(num(r.currency_id))),
+      frozen(r.account_rate, accRateNow(r.account_id)),
     );
     byId.set(r.account_id, (byId.get(r.account_id) ?? 0) + converted);
   }
@@ -362,8 +377,8 @@ export async function withBalances(
     const signed = r.kind === "add" ? num(r.amount) : -num(r.amount);
     const converted = convertAmount(
       signed,
-      rateOf(num(r.currency_id)),
-      rateOf(accCurrency.get(r.account_id) ?? 0),
+      frozen(r.fx_rate, rateOf(num(r.currency_id))),
+      frozen(r.account_rate, accRateNow(r.account_id)),
     );
     byId.set(r.account_id, (byId.get(r.account_id) ?? 0) + converted);
   }
@@ -373,23 +388,28 @@ export async function withBalances(
     byId.set(t.from_account_id, (byId.get(t.from_account_id) ?? 0) - amt);
     const fromC = accCurrency.get(t.from_account_id) ?? 0;
     const toC = accCurrency.get(t.to_account_id) ?? 0;
-    const converted = toC && fromC ? (amt * rateOf(fromC)) / rateOf(toC) : amt;
+    const converted =
+      toC && fromC ? (amt * frozen(t.from_rate, rateOf(fromC))) / frozen(t.to_rate, rateOf(toC)) : amt;
     byId.set(t.to_account_id, (byId.get(t.to_account_id) ?? 0) + converted);
   }
   for (const r of expenses) {
     if (r.account_id == null || Boolean(r.as_debt)) continue;
-    const converted = convertAmount(num(r.amount), rateOf(num(r.currency_id)), rateOf(accCurrency.get(r.account_id) ?? 0));
+    const converted = convertAmount(
+      num(r.amount),
+      frozen(r.fx_rate, rateOf(num(r.currency_id))),
+      frozen(r.account_rate, accRateNow(r.account_id)),
+    );
     byId.set(r.account_id, (byId.get(r.account_id) ?? 0) - converted);
   }
   for (const r of payments) {
     if (r.account_id == null) continue;
-    const converted = convertAmount(num(r.amount), num(r.from_rate) || 1, rateOf(accCurrency.get(r.account_id) ?? 0));
+    const converted = convertAmount(num(r.amount), num(r.from_rate) || 1, frozen(r.account_rate, accRateNow(r.account_id)));
     const signed = r.kind === "receipt" ? converted : -converted;
     byId.set(r.account_id, (byId.get(r.account_id) ?? 0) + signed);
   }
   for (const r of workerPays) {
     if (r.account_id == null) continue;
-    const converted = convertAmount(num(r.amount), 1, rateOf(accCurrency.get(r.account_id) ?? 0));
+    const converted = convertAmount(num(r.amount), 1, frozen(r.account_rate, accRateNow(r.account_id)));
     byId.set(r.account_id, (byId.get(r.account_id) ?? 0) - converted);
   }
 

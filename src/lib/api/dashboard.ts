@@ -47,7 +47,7 @@ export const getDashboard = createServerFn({ method: "GET" })
         left join purchase_invoices i on i.id = p.invoice_id
         where p.user_id = ${context.userId}
       `,
-      sql<Record<string, unknown>>`select amount, currency_id, as_debt from expenses where user_id = ${context.userId}`,
+      sql<Record<string, unknown>>`select amount, currency_id, as_debt, fx_rate from expenses where user_id = ${context.userId}`,
       sql<Record<string, unknown>>`select * from purchase_invoices where user_id = ${context.userId}`,
       loadInventoryState(sql, context.userId),
       loadRecurringDues(sql, context.userId),
@@ -81,7 +81,11 @@ export const getDashboard = createServerFn({ method: "GET" })
     const expenseBase =
       expenses
         .filter((r) => !r.as_debt)
-        .reduce((s, r) => s + toBase(num(r.amount), num(r.currency_id)), 0) +
+        // ACC-01: a paid expense is a past cost — keep the rate frozen when it was paid.
+        .reduce(
+          (s, r) => s + (num(r.fx_rate) > 0 ? num(r.amount) * num(r.fx_rate) : toBase(num(r.amount), num(r.currency_id))),
+          0,
+        ) +
       workerPays
         .filter((r) => text(r.employment) === "salaried")
         .reduce((s, r) => s + num(r.amount), 0);

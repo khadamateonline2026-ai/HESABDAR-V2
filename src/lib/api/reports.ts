@@ -384,7 +384,7 @@ async function loadCashPartyPaymentRows(
     select t.*, a1.name as from_name, a2.name as to_name,
       a1.kind as from_kind, a2.kind as to_kind,
       a1.currency_id as from_cur, a2.currency_id as to_cur,
-      c.symbol as currency_symbol, c.rate_to_base
+      c.symbol as currency_symbol, coalesce(nullif(t.from_rate, 0), c.rate_to_base) as rate_to_base
     from transfers t
     join accounts a1 on a1.id = t.from_account_id
     join accounts a2 on a2.id = t.to_account_id
@@ -488,7 +488,7 @@ async function loadCashPartyStatement(
       order by t.occurred_on desc, t.id desc
     `,
     sql<Record<string, unknown>>`
-      select o.*, c.symbol as currency_symbol, c.rate_to_base
+      select o.*, c.symbol as currency_symbol, coalesce(nullif(o.fx_rate, 0), c.rate_to_base) as rate_to_base
       from opening_cash o
       join currencies c on c.id = o.currency_id
       where o.user_id = ${userId} and o.account_id = ${accountId}
@@ -565,7 +565,8 @@ async function loadCashPartyStatement(
     const amt = num(t.amount);
     if (amt <= 1e-9) continue;
     const fromCur = num(t.from_cur);
-    const base = amt * rateOf(fromCur);
+    const tRate = num(t.from_rate) > 0 ? num(t.from_rate) : rateOf(fromCur);
+    const base = amt * tRate;
     const incoming = num(t.to_account_id) === accountId;
     const asInvoice = recv ? incoming : !incoming;
     const otherName = incoming ? text(t.from_name) : text(t.to_name);
@@ -578,7 +579,7 @@ async function loadCashPartyStatement(
         amountBase: base,
         currencyId: fromCur,
         currencySymbol: catalogs.currencies.find((c) => c.id === fromCur)?.symbol || acc.currencySymbol,
-        fxRate: rateOf(fromCur),
+        fxRate: tRate,
         accountId: incoming ? num(t.from_account_id) : num(t.to_account_id),
         accountName: otherName,
         receiptNo: "انتقال",
@@ -921,13 +922,24 @@ export const savePartyPayment = createServerFn({ method: "POST" })
     if (data.kind === "payment") {
       let creditBack = 0;
       if (data.id) {
-        const old = await sql<{ account_id: number | null; amount: unknown; currency_id: number; kind: string; fx_rate: unknown }>`
-          select account_id, amount, currency_id, kind, fx_rate from party_payments
+        const old = await sql<{
+          account_id: number | null;
+          amount: unknown;
+          currency_id: number;
+          kind: string;
+          fx_rate: unknown;
+          account_rate: unknown;
+        }>`
+          select account_id, amount, currency_id, kind, fx_rate, account_rate from party_payments
           where id = ${data.id} and user_id = ${context.userId}
         `;
         if (old[0] && old[0].kind === "payment" && old[0].account_id != null && data.accountId === num(old[0].account_id)) {
           const acc = catalogs.accounts.find((a) => a.id === data.accountId);
-          const accRate = catalogs.currencies.find((c) => c.id === acc?.currencyId)?.rateToBase || 1;
+          // ACC-01: frozen account rate, so the credit-back matches the balance.
+          const accRate =
+            num(old[0].account_rate) > 0
+              ? num(old[0].account_rate)
+              : catalogs.currencies.find((c) => c.id === acc?.currencyId)?.rateToBase || 1;
           const oldRate =
             num(old[0].fx_rate) > 1e-12
               ? num(old[0].fx_rate)

@@ -24,7 +24,9 @@ test("ACC-05 bug: a paid purchase without a vendor did not reduce the cashbox", 
   const ids = await seedUser(db.sql, "u1");
   await db.sql`update accounts set opening_balance = 1000 where id = ${ids.accountId}`;
   await purchaseInvoice(db.sql, "u1", ids, null, 300);
-  assert.equal(await balance(db.sql, "u1"), 1000, "old: paid 300 but cash still 1000");
+  // Old state: no cash movement row exists for the paid invoice, so the till never dropped.
+  const rows = await db.sql<{ n: number }>`select count(*)::int as n from party_payments`;
+  assert.equal(Number(rows[0].n), 0, "old: paid 300 but no cash movement recorded");
   // Migration 0028 backfills the missing cash movement for existing invoices.
   await applyMigrations(db.pg);
   assert.equal(await balance(db.sql, "u1"), 700);
