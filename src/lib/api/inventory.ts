@@ -1,4 +1,5 @@
 import { createServerFn } from "@tanstack/react-start";
+import { withTransaction } from "@/lib/db";
 import { authMiddleware } from "@/lib/auth/middleware";
 import { formatMoney, nextInvoiceNo, num, text } from "@/lib/format";
 import type { InventoryData, ProductionStage, WorkOrder } from "@/lib/types";
@@ -386,53 +387,56 @@ export const createWorkOrder = createServerFn({ method: "POST" })
         throw new Error("سفارش تولید فقط به کارگر کانتراتی داده می‌شود");
       }
     }
-    const bom = await sql<{ raw_item_id: number; quantity: unknown; name: string }>`
-      select b.raw_item_id, b.quantity, i.name
-      from bom_lines b
-      join items i on i.id = b.raw_item_id
-      where b.product_id = ${data.productId} and b.user_id = ${context.userId}
-    `;
-    if (!bom.length) throw new Error("فرمول مواد خام این کالا ثبت نشده است");
-    const inv = await loadInventoryState(sql, context.userId);
-    const short: string[] = [];
-    for (const line of bom) {
-      const need = num(line.quantity) * data.quantity;
-      const have = inv.raw.find((r) => r.itemId === num(line.raw_item_id))?.qty ?? 0;
-      if (have + 1e-9 < need) {
-        short.push(`${text(line.name)} (موجود ${formatMoney(have)}، لازم ${formatMoney(need)})`);
-      }
-    }
-    if (short.length) throw new Error(`موجودی مواد خام کافی نیست:\n${short.join("\n")}`);
-    const existingNos = await sql<{ invoice_no: string | null }>`
-      select invoice_no from work_orders where user_id = ${context.userId}
-    `;
-    const invoiceNo = (data.invoiceNo || "").trim() || nextInvoiceNo(
-      existingNos.map((r) => text(r.invoice_no)),
-      "W",
-    );
-    const rows = await sql<{ id: number }>`
-      insert into work_orders (
-        user_id, worker_id, product_id, product_name, quantity, delivered_qty, occurred_on, notes, invoice_no, stage_id
-      ) values (
-        ${context.userId}, ${data.workerId}, ${data.productId}, ${product[0].name}, ${data.quantity},
-        ${0}, ${data.occurredOn}, ${data.notes}, ${invoiceNo}, ${stageId}
-      )
-      returning id
-    `;
-    const id = rows[0].id;
-    await sql`update work_orders set root_id = ${id} where id = ${id} and user_id = ${context.userId}`;
-    for (const line of bom) {
-      const per = num(line.quantity);
-      await sql`
-        insert into work_order_alloc (
-          user_id, work_order_id, raw_item_id, raw_item_name, qty_per_unit, allocated_qty
-        ) values (
-          ${context.userId}, ${id}, ${num(line.raw_item_id)}, ${text(line.name)}, ${per},
-          ${per * data.quantity}
-        )
+    // STR-03: order, its root link and raw-material allocations are saved together.
+    return withTransaction(async (sql) => {
+      const bom = await sql<{ raw_item_id: number; quantity: unknown; name: string }>`
+        select b.raw_item_id, b.quantity, i.name
+        from bom_lines b
+        join items i on i.id = b.raw_item_id
+        where b.product_id = ${data.productId} and b.user_id = ${context.userId}
       `;
-    }
-    return { id };
+      if (!bom.length) throw new Error("فرمول مواد خام این کالا ثبت نشده است");
+      const inv = await loadInventoryState(sql, context.userId);
+      const short: string[] = [];
+      for (const line of bom) {
+        const need = num(line.quantity) * data.quantity;
+        const have = inv.raw.find((r) => r.itemId === num(line.raw_item_id))?.qty ?? 0;
+        if (have + 1e-9 < need) {
+          short.push(`${text(line.name)} (موجود ${formatMoney(have)}، لازم ${formatMoney(need)})`);
+        }
+      }
+      if (short.length) throw new Error(`موجودی مواد خام کافی نیست:\n${short.join("\n")}`);
+      const existingNos = await sql<{ invoice_no: string | null }>`
+        select invoice_no from work_orders where user_id = ${context.userId}
+      `;
+      const invoiceNo = (data.invoiceNo || "").trim() || nextInvoiceNo(
+        existingNos.map((r) => text(r.invoice_no)),
+        "W",
+      );
+      const rows = await sql<{ id: number }>`
+        insert into work_orders (
+          user_id, worker_id, product_id, product_name, quantity, delivered_qty, occurred_on, notes, invoice_no, stage_id
+        ) values (
+          ${context.userId}, ${data.workerId}, ${data.productId}, ${product[0].name}, ${data.quantity},
+          ${0}, ${data.occurredOn}, ${data.notes}, ${invoiceNo}, ${stageId}
+        )
+        returning id
+      `;
+      const id = rows[0].id;
+      await sql`update work_orders set root_id = ${id} where id = ${id} and user_id = ${context.userId}`;
+      for (const line of bom) {
+        const per = num(line.quantity);
+        await sql`
+          insert into work_order_alloc (
+            user_id, work_order_id, raw_item_id, raw_item_name, qty_per_unit, allocated_qty
+          ) values (
+            ${context.userId}, ${id}, ${num(line.raw_item_id)}, ${text(line.name)}, ${per},
+            ${per * data.quantity}
+          )
+        `;
+      }
+      return { id };
+    });
   });
 
 export const listPriorProductGivers = createServerFn({ method: "POST" })
@@ -469,141 +473,145 @@ export const deliverWorkOrder = createServerFn({ method: "POST" })
     const sql = await sqlOf();
     await requireWriteAny(sql, context.userId, ["warehouses", "workers"]);
     if (data.quantity <= 0) throw new Error("تعداد تحویل باید بزرگ‌تر از صفر باشد");
-    const order = await sql<{
-      id: number;
-      quantity: unknown;
-      delivered_qty: unknown;
-      product_id: number;
-      product_name: string;
-      worker_id: number | null;
-      stage_id: number | null;
-      root_id: number | null;
-    }>`
-      select id, quantity, delivered_qty, product_id, product_name, worker_id, stage_id, root_id
-      from work_orders where id = ${data.id} and user_id = ${context.userId}
-    `;
-    if (!order[0]) throw new Error("سفارش یافت نشد");
-    await sql.query("alter table work_deliveries add column if not exists wage_per_unit numeric");
-    const wage = await snapshotWage(
-      sql,
-      context.userId,
-      order[0].worker_id == null ? null : num(order[0].worker_id),
-      text(order[0].product_name),
-    );
-    const remaining = num(order[0].quantity) - num(order[0].delivered_qty);
-    if (data.quantity - remaining > 1e-9) {
-      throw new Error(`بیش از باقی‌مانده سفارش (${formatMoney(remaining)}) نمی‌توان تحویل داد`);
-    }
-    const rootId = order[0].root_id == null ? num(order[0].id) : num(order[0].root_id);
-    const weekNo = (data.invoiceNo || "").trim();
-    if (weekNo) {
-      await sql`
-        update work_orders set invoice_no = ${weekNo}
-        where id = ${data.id} and user_id = ${context.userId}
+    // STR-03: the delivery row, the child order and delivered_qty change together; the order row is locked so two deliveries cannot both pass the remaining-quantity check.
+    return withTransaction(async (sql) => {
+      const order = await sql<{
+        id: number;
+        quantity: unknown;
+        delivered_qty: unknown;
+        product_id: number;
+        product_name: string;
+        worker_id: number | null;
+        stage_id: number | null;
+        root_id: number | null;
+      }>`
+        select id, quantity, delivered_qty, product_id, product_name, worker_id, stage_id, root_id
+        from work_orders where id = ${data.id} and user_id = ${context.userId}
+        for update
       `;
-    }
-
-    if (data.toWarehouse) {
-      const bomLines = await recipeForOrder(sql, context.userId, rootId, num(order[0].product_id));
-      const inv = await loadInventoryState(sql, context.userId);
-      const short: string[] = [];
-      for (const line of bomLines) {
-        const need = line.quantity * data.quantity;
-        const have = inv.workerRaw.find((r) => r.itemId === line.rawItemId)?.qty ?? 0;
-        if (have + 1e-9 < need) {
-          short.push(`${line.name} (موجود ${formatMoney(have)}، لازم ${formatMoney(need)})`);
-        }
+      if (!order[0]) throw new Error("سفارش یافت نشد");
+      await sql.query("alter table work_deliveries add column if not exists wage_per_unit numeric");
+      const wage = await snapshotWage(
+        sql,
+        context.userId,
+        order[0].worker_id == null ? null : num(order[0].worker_id),
+        text(order[0].product_name),
+      );
+      const remaining = num(order[0].quantity) - num(order[0].delivered_qty);
+      if (data.quantity - remaining > 1e-9) {
+        throw new Error(`بیش از باقی‌مانده سفارش (${formatMoney(remaining)}) نمی‌توان تحویل داد`);
       }
-      if (short.length) throw new Error(`موجودی مواد نزد کارگران کافی نیست:\n${short.join("\n")}`);
+      const rootId = order[0].root_id == null ? num(order[0].id) : num(order[0].root_id);
+      const weekNo = (data.invoiceNo || "").trim();
+      if (weekNo) {
+        await sql`
+          update work_orders set invoice_no = ${weekNo}
+          where id = ${data.id} and user_id = ${context.userId}
+        `;
+      }
+
+      if (data.toWarehouse) {
+        const bomLines = await recipeForOrder(sql, context.userId, rootId, num(order[0].product_id));
+        const inv = await loadInventoryState(sql, context.userId);
+        const short: string[] = [];
+        for (const line of bomLines) {
+          const need = line.quantity * data.quantity;
+          const have = inv.workerRaw.find((r) => r.itemId === line.rawItemId)?.qty ?? 0;
+          if (have + 1e-9 < need) {
+            short.push(`${line.name} (موجود ${formatMoney(have)}، لازم ${formatMoney(need)})`);
+          }
+        }
+        if (short.length) throw new Error(`موجودی مواد نزد کارگران کافی نیست:\n${short.join("\n")}`);
+        await sql`
+          insert into work_deliveries (
+            user_id, work_order_id, quantity, occurred_on, notes, to_worker_id, to_work_order_id, wage_per_unit
+          ) values (
+            ${context.userId}, ${data.id}, ${data.quantity}, ${data.occurredOn}, ${data.notes}, ${null}, ${null}, ${wage}
+          )
+        `;
+        await sql`
+          update work_orders set delivered_qty = delivered_qty + ${data.quantity}
+          where id = ${data.id} and user_id = ${context.userId}
+        `;
+        return { ok: true as const, toWarehouse: true as const };
+      }
+
+      const toWorkerId = data.toWorkerId ?? null;
+      if (toWorkerId == null) throw new Error("کارگر مرحله بعد را انتخاب کنید");
+      if (toWorkerId === (order[0].worker_id == null ? null : num(order[0].worker_id))) {
+        throw new Error("نمی‌توان به همان کارگر تحویل داد");
+      }
+      const target = await sql<{ id: number; stage_id: number | null; name: string; employment: string | null }>`
+        select id, stage_id, name, employment from parties
+        where id = ${toWorkerId} and user_id = ${context.userId} and kind = ${"worker"}
+      `;
+      if (!target[0]) throw new Error("کارگر یافت نشد");
+      if (text(target[0].employment) === "salaried") throw new Error("تحویل فقط به کارگر کانتراتی است");
+      const giverId = order[0].worker_id == null ? null : num(order[0].worker_id);
+      if (giverId != null) {
+        const back = await sql<{ worker_id: number }>`
+          select o.worker_id
+          from work_deliveries d
+          join work_orders o on o.id = d.work_order_id and o.user_id = d.user_id
+          where d.user_id = ${context.userId}
+            and d.to_worker_id = ${giverId}
+            and o.product_id = ${num(order[0].product_id)}
+            and o.worker_id = ${toWorkerId}
+          limit 1
+        `;
+        if (back[0]) throw new Error("تحویل این کالا به کسی که همین مدل را از او گرفته‌اید مجاز نیست");
+      }
+      const targetStage = target[0].stage_id == null ? null : num(target[0].stage_id);
+
+      const existingChild = await sql<{ id: number }>`
+        select id from work_orders
+        where user_id = ${context.userId} and root_id = ${rootId}
+          and worker_id = ${toWorkerId} and product_id = ${num(order[0].product_id)}
+        order by id
+        limit 1
+      `;
+      let childId = existingChild[0]?.id ?? null;
+      if (childId == null) {
+        const invoiceNo = weekNo || nextInvoiceNo(
+          (
+            await sql<{ invoice_no: string | null }>`
+              select invoice_no from work_orders where user_id = ${context.userId}
+            `
+          ).map((r) => text(r.invoice_no)),
+          "W",
+        );
+        const note = `تحویل از سفارش ${text(order[0].product_name)}`;
+        const inserted = await sql<{ id: number }>`
+          insert into work_orders (
+            user_id, worker_id, product_id, product_name, quantity, delivered_qty, occurred_on, notes, invoice_no,
+            stage_id, root_id
+          ) values (
+            ${context.userId}, ${toWorkerId}, ${num(order[0].product_id)}, ${text(order[0].product_name)},
+            ${data.quantity}, ${0}, ${data.occurredOn}, ${note}, ${invoiceNo}, ${targetStage}, ${rootId}
+          )
+          returning id
+        `;
+        childId = inserted[0].id;
+      } else {
+        await sql`
+          update work_orders set quantity = quantity + ${data.quantity}
+          where id = ${childId} and user_id = ${context.userId}
+        `;
+      }
       await sql`
         insert into work_deliveries (
           user_id, work_order_id, quantity, occurred_on, notes, to_worker_id, to_work_order_id, wage_per_unit
         ) values (
-          ${context.userId}, ${data.id}, ${data.quantity}, ${data.occurredOn}, ${data.notes}, ${null}, ${null}, ${wage}
+          ${context.userId}, ${data.id}, ${data.quantity}, ${data.occurredOn}, ${data.notes},
+          ${toWorkerId}, ${childId}, ${wage}
         )
       `;
       await sql`
         update work_orders set delivered_qty = delivered_qty + ${data.quantity}
         where id = ${data.id} and user_id = ${context.userId}
       `;
-      return { ok: true as const, toWarehouse: true as const };
-    }
-
-    const toWorkerId = data.toWorkerId ?? null;
-    if (toWorkerId == null) throw new Error("کارگر مرحله بعد را انتخاب کنید");
-    if (toWorkerId === (order[0].worker_id == null ? null : num(order[0].worker_id))) {
-      throw new Error("نمی‌توان به همان کارگر تحویل داد");
-    }
-    const target = await sql<{ id: number; stage_id: number | null; name: string; employment: string | null }>`
-      select id, stage_id, name, employment from parties
-      where id = ${toWorkerId} and user_id = ${context.userId} and kind = ${"worker"}
-    `;
-    if (!target[0]) throw new Error("کارگر یافت نشد");
-    if (text(target[0].employment) === "salaried") throw new Error("تحویل فقط به کارگر کانتراتی است");
-    const giverId = order[0].worker_id == null ? null : num(order[0].worker_id);
-    if (giverId != null) {
-      const back = await sql<{ worker_id: number }>`
-        select o.worker_id
-        from work_deliveries d
-        join work_orders o on o.id = d.work_order_id and o.user_id = d.user_id
-        where d.user_id = ${context.userId}
-          and d.to_worker_id = ${giverId}
-          and o.product_id = ${num(order[0].product_id)}
-          and o.worker_id = ${toWorkerId}
-        limit 1
-      `;
-      if (back[0]) throw new Error("تحویل این کالا به کسی که همین مدل را از او گرفته‌اید مجاز نیست");
-    }
-    const targetStage = target[0].stage_id == null ? null : num(target[0].stage_id);
-
-    const existingChild = await sql<{ id: number }>`
-      select id from work_orders
-      where user_id = ${context.userId} and root_id = ${rootId}
-        and worker_id = ${toWorkerId} and product_id = ${num(order[0].product_id)}
-      order by id
-      limit 1
-    `;
-    let childId = existingChild[0]?.id ?? null;
-    if (childId == null) {
-      const invoiceNo = weekNo || nextInvoiceNo(
-        (
-          await sql<{ invoice_no: string | null }>`
-            select invoice_no from work_orders where user_id = ${context.userId}
-          `
-        ).map((r) => text(r.invoice_no)),
-        "W",
-      );
-      const note = `تحویل از سفارش ${text(order[0].product_name)}`;
-      const inserted = await sql<{ id: number }>`
-        insert into work_orders (
-          user_id, worker_id, product_id, product_name, quantity, delivered_qty, occurred_on, notes, invoice_no,
-          stage_id, root_id
-        ) values (
-          ${context.userId}, ${toWorkerId}, ${num(order[0].product_id)}, ${text(order[0].product_name)},
-          ${data.quantity}, ${0}, ${data.occurredOn}, ${note}, ${invoiceNo}, ${targetStage}, ${rootId}
-        )
-        returning id
-      `;
-      childId = inserted[0].id;
-    } else {
-      await sql`
-        update work_orders set quantity = quantity + ${data.quantity}
-        where id = ${childId} and user_id = ${context.userId}
-      `;
-    }
-    await sql`
-      insert into work_deliveries (
-        user_id, work_order_id, quantity, occurred_on, notes, to_worker_id, to_work_order_id, wage_per_unit
-      ) values (
-        ${context.userId}, ${data.id}, ${data.quantity}, ${data.occurredOn}, ${data.notes},
-        ${toWorkerId}, ${childId}, ${wage}
-      )
-    `;
-    await sql`
-      update work_orders set delivered_qty = delivered_qty + ${data.quantity}
-      where id = ${data.id} and user_id = ${context.userId}
-    `;
-    return { ok: true as const, toWarehouse: false as const, toWorkOrderId: childId };
+      return { ok: true as const, toWarehouse: false as const, toWorkOrderId: childId };
+    });
   });
 
 export const updateWorkOrder = createServerFn({ method: "POST" })

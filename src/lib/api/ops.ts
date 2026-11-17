@@ -3,7 +3,7 @@ import { authMiddleware } from "@/lib/auth/middleware";
 import { convertAmount, num, text, todayIso } from "@/lib/format";
 import type { ExpenseCategory, RecurringCadence, RecurringDue, RecurringDueAnchor, RecurringExpense } from "@/lib/types";
 import { parseCadence, parseDueAnchor } from "@/lib/types";
-import type { Sql } from "@/lib/db";
+import { withTransaction, type Sql } from "@/lib/db";
 import { docStatusOf, getRoleCodes, guard, invoiceOf, itemKindOf, loadCatalogs, sqlOf, assertAccountantPin } from "./helpers";
 
 async function settleExpenseAccount(
@@ -611,64 +611,68 @@ export const setRecurringPeriodStatus = createServerFn({ method: "POST" })
   .middleware([authMiddleware])
   .validator((d: { recurringId: number; period: string; status: "paid" | "unpaid" }) => d)
   .handler(async ({ context, data }) => {
-    const { sql } = await guard(context.userId, "expenses");
-    const rec = await sql<Record<string, unknown>>`
-      select * from recurring_expenses where id = ${data.recurringId} and user_id = ${context.userId}
-    `;
-    if (!rec[0]) throw new Error("هزینه تکراری یافت نشد");
-    const existing = await sql<Record<string, unknown>>`
-      select * from recurring_periods
-      where recurring_id = ${data.recurringId} and period = ${data.period} and user_id = ${context.userId}
-    `;
-    if (data.status === "unpaid") {
-      if (existing[0]?.expense_id != null) {
-        await sql`delete from expenses where id = ${num(existing[0].expense_id)} and user_id = ${context.userId}`;
+    await guard(context.userId, "expenses");
+    // STR-03: the expense row and the period status change together; the recurring row is locked so a double click cannot create two expenses for one period.
+    return withTransaction(async (sql) => {
+      const rec = await sql<Record<string, unknown>>`
+        select * from recurring_expenses where id = ${data.recurringId} and user_id = ${context.userId}
+        for update
+      `;
+      if (!rec[0]) throw new Error("هزینه تکراری یافت نشد");
+      const existing = await sql<Record<string, unknown>>`
+        select * from recurring_periods
+        where recurring_id = ${data.recurringId} and period = ${data.period} and user_id = ${context.userId}
+      `;
+      if (data.status === "unpaid") {
+        if (existing[0]?.expense_id != null) {
+          await sql`delete from expenses where id = ${num(existing[0].expense_id)} and user_id = ${context.userId}`;
+        }
+        if (existing[0]) {
+          await sql`
+            delete from recurring_periods where id = ${num(existing[0].id)} and user_id = ${context.userId}
+          `;
+        }
+        return { ok: true as const };
+      }
+      const accounts = await sql<{ id: number }>`
+        select id from accounts where user_id = ${context.userId} order by id limit 1
+      `;
+      const recAccount = rec[0].account_id == null ? accounts[0]?.id ?? null : num(rec[0].account_id);
+      const paid = await settleExpenseAccount(sql, context.userId, {
+        accountId: recAccount,
+        amount: num(rec[0].amount),
+        currencyId: num(rec[0].currency_id),
+      });
+      const recParty = rec[0].party_id == null ? null : num(rec[0].party_id);
+      let expenseId = existing[0]?.expense_id == null ? null : num(existing[0].expense_id);
+      if (expenseId == null) {
+        const inserted = await sql<{ id: number }>`
+          insert into expenses (
+            user_id, title, amount, currency_id, account_id, occurred_on, notes, category_id, party_id, as_debt
+          ) values (
+            ${context.userId}, ${text(rec[0].title)}, ${num(rec[0].amount)}, ${num(rec[0].currency_id)},
+            ${paid.accountId}, ${todayIso()}, ${`دوره ${data.period}`},
+            ${rec[0].category_id == null ? null : num(rec[0].category_id)}, ${recParty}, ${paid.asDebt}
+          )
+          returning id
+        `;
+        expenseId = inserted[0].id;
       }
       if (existing[0]) {
         await sql`
-          delete from recurring_periods where id = ${num(existing[0].id)} and user_id = ${context.userId}
+          update recurring_periods set status = ${"paid"}, paid_on = ${todayIso()}, expense_id = ${expenseId}
+          where id = ${num(existing[0].id)} and user_id = ${context.userId}
+        `;
+      } else {
+        await sql`
+          insert into recurring_periods (user_id, recurring_id, period, status, paid_on, expense_id)
+          values (
+            ${context.userId}, ${data.recurringId}, ${data.period}, ${"paid"}, ${todayIso()}, ${expenseId}
+          )
         `;
       }
       return { ok: true as const };
-    }
-    const accounts = await sql<{ id: number }>`
-      select id from accounts where user_id = ${context.userId} order by id limit 1
-    `;
-    const recAccount = rec[0].account_id == null ? accounts[0]?.id ?? null : num(rec[0].account_id);
-    const paid = await settleExpenseAccount(sql, context.userId, {
-      accountId: recAccount,
-      amount: num(rec[0].amount),
-      currencyId: num(rec[0].currency_id),
     });
-    const recParty = rec[0].party_id == null ? null : num(rec[0].party_id);
-    let expenseId = existing[0]?.expense_id == null ? null : num(existing[0].expense_id);
-    if (expenseId == null) {
-      const inserted = await sql<{ id: number }>`
-        insert into expenses (
-          user_id, title, amount, currency_id, account_id, occurred_on, notes, category_id, party_id, as_debt
-        ) values (
-          ${context.userId}, ${text(rec[0].title)}, ${num(rec[0].amount)}, ${num(rec[0].currency_id)},
-          ${paid.accountId}, ${todayIso()}, ${`دوره ${data.period}`},
-          ${rec[0].category_id == null ? null : num(rec[0].category_id)}, ${recParty}, ${paid.asDebt}
-        )
-        returning id
-      `;
-      expenseId = inserted[0].id;
-    }
-    if (existing[0]) {
-      await sql`
-        update recurring_periods set status = ${"paid"}, paid_on = ${todayIso()}, expense_id = ${expenseId}
-        where id = ${num(existing[0].id)} and user_id = ${context.userId}
-      `;
-    } else {
-      await sql`
-        insert into recurring_periods (user_id, recurring_id, period, status, paid_on, expense_id)
-        values (
-          ${context.userId}, ${data.recurringId}, ${data.period}, ${"paid"}, ${todayIso()}, ${expenseId}
-        )
-      `;
-    }
-    return { ok: true as const };
   });
 
 export const getReports = createServerFn({ method: "GET" })

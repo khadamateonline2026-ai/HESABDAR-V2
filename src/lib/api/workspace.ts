@@ -1,6 +1,7 @@
 import { assertPinShape, hashPin, verifyPin } from "@/lib/auth/pin-hash";
 import { assertRoleNotLocked, recordRoleFail, recordRoleSuccess } from "@/lib/auth/role-rate-limit";
 import { createServerFn } from "@tanstack/react-start";
+import { withTransaction, type Sql } from "@/lib/db";
 import { authMiddleware } from "@/lib/auth/middleware";
 import { num, text } from "@/lib/format";
 import { type AppSettings, type ColorPreset, type Role } from "@/lib/types";
@@ -313,6 +314,17 @@ export const deleteCloudBackup = createServerFn({ method: "POST" })
 
 const RESET_KEEP = new Set(["companies", "app_settings", "staff_users"]);
 
+/** STR-03: empties the workspace and re-seeds defaults; call inside a transaction. */
+export async function resetWorkspaceTx(tx: Sql, userId: string): Promise<void> {
+  await muteActivityLog(tx, userId);
+  for (const name of [...WORKSPACE_TABLES].reverse()) {
+    if (RESET_KEEP.has(name)) continue;
+    await tx.query(`delete from ${name} where user_id = $1`, [userId]);
+  }
+  await seedDefaults(tx, userId);
+  await unmuteActivityLog(tx, userId);
+}
+
 export const resetWorkspaceData = createServerFn({ method: "POST" })
   .middleware([authMiddleware])
   .validator((d: { code: string }) => d)
@@ -321,15 +333,8 @@ export const resetWorkspaceData = createServerFn({ method: "POST" })
     await requireWrite(sql, context.userId, "settings");
     const codes = await getRoleCodes(sql, context.userId);
     assertAccountantPin(codes, data.code);
-    await muteActivityLog(sql, context.userId);
-    try {
-      for (const name of [...WORKSPACE_TABLES].reverse()) {
-        if (RESET_KEEP.has(name)) continue;
-        await sql.query(`delete from ${name} where user_id = $1`, [context.userId]);
-      }
-      await seedDefaults(sql, context.userId);
-    } finally {
-      await unmuteActivityLog(sql, context.userId);
-    }
+    // STR-03: all-or-nothing — a failure half way must not leave a partly
+    // emptied workspace (or a muted activity log).
+    await withTransaction((tx) => resetWorkspaceTx(tx, context.userId));
     return { ok: true as const };
   });

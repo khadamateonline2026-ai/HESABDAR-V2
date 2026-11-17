@@ -1,6 +1,7 @@
 import { createServerFn } from "@tanstack/react-start";
 import { authMiddleware } from "@/lib/auth/middleware";
 import { convertAmount, num, text } from "@/lib/format";
+import { withTransaction } from "@/lib/db";
 import { sqlOf, guard, assertCashAvailable, loadCatalogs, loadInventoryState, fxToBase } from "./helpers";
 
 export const saveAccount = createServerFn({ method: "POST" })
@@ -70,39 +71,43 @@ export const saveTransfer = createServerFn({ method: "POST" })
     }) => d,
   )
   .handler(async ({ context, data }) => {
-    const { sql } = await guard(context.userId, "transfers");
+    await guard(context.userId, "transfers");
     if (data.fromAccountId === data.toAccountId) throw new Error("حساب مبدأ و مقصد باید متفاوت باشند");
-    const catalogs = await loadCatalogs(sql, context.userId);
-    const fromAcc = catalogs.accounts.find((a) => a.id === data.fromAccountId);
-    const fromRate = catalogs.currencies.find((c) => c.id === fromAcc?.currencyId)?.rateToBase || 1;
-    let creditBack = 0;
-    if (data.id) {
-      const old = await sql<{ from_account_id: number; amount: unknown }>`
-        select from_account_id, amount from transfers where id = ${data.id} and user_id = ${context.userId}
+    // STR-03: the balance check and the write run in one transaction with the source account locked, so two transfers cannot both spend the same money.
+    return withTransaction(async (sql) => {
+      await sql`select id from accounts where id = ${data.fromAccountId} and user_id = ${context.userId} for update`;
+      const catalogs = await loadCatalogs(sql, context.userId);
+      const fromAcc = catalogs.accounts.find((a) => a.id === data.fromAccountId);
+      const fromRate = catalogs.currencies.find((c) => c.id === fromAcc?.currencyId)?.rateToBase || 1;
+      let creditBack = 0;
+      if (data.id) {
+        const old = await sql<{ from_account_id: number; amount: unknown }>`
+          select from_account_id, amount from transfers where id = ${data.id} and user_id = ${context.userId}
+        `;
+        if (old[0] && num(old[0].from_account_id) === data.fromAccountId) creditBack = num(old[0].amount);
+      }
+      await assertCashAvailable(sql, context.userId, {
+        accountId: data.fromAccountId,
+        amount: data.amount,
+        amountRate: fromRate,
+        creditBack,
+      });
+      if (data.id) {
+        await sql`
+          update transfers
+          set from_account_id = ${data.fromAccountId}, to_account_id = ${data.toAccountId},
+              amount = ${data.amount}, occurred_on = ${data.occurredOn}, notes = ${data.notes}
+          where id = ${data.id} and user_id = ${context.userId}
+        `;
+        return { id: data.id };
+      }
+      const rows = await sql<{ id: number }>`
+        insert into transfers (user_id, from_account_id, to_account_id, amount, occurred_on, notes)
+        values (${context.userId}, ${data.fromAccountId}, ${data.toAccountId}, ${data.amount}, ${data.occurredOn}, ${data.notes})
+        returning id
       `;
-      if (old[0] && num(old[0].from_account_id) === data.fromAccountId) creditBack = num(old[0].amount);
-    }
-    await assertCashAvailable(sql, context.userId, {
-      accountId: data.fromAccountId,
-      amount: data.amount,
-      amountRate: fromRate,
-      creditBack,
+      return { id: rows[0].id };
     });
-    if (data.id) {
-      await sql`
-        update transfers
-        set from_account_id = ${data.fromAccountId}, to_account_id = ${data.toAccountId},
-            amount = ${data.amount}, occurred_on = ${data.occurredOn}, notes = ${data.notes}
-        where id = ${data.id} and user_id = ${context.userId}
-      `;
-      return { id: data.id };
-    }
-    const rows = await sql<{ id: number }>`
-      insert into transfers (user_id, from_account_id, to_account_id, amount, occurred_on, notes)
-      values (${context.userId}, ${data.fromAccountId}, ${data.toAccountId}, ${data.amount}, ${data.occurredOn}, ${data.notes})
-      returning id
-    `;
-    return { id: rows[0].id };
   });
 
 export const deleteTransfer = createServerFn({ method: "POST" })

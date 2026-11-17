@@ -336,51 +336,55 @@ export const receivePurchaseInvoice = createServerFn({ method: "POST" })
     }) => d,
   )
   .handler(async ({ context, data }) => {
-    const { sql } = await guard(context.userId, "purchase");
-    const header = await sql<{ id: number }>`
-      select id from purchase_invoices where id = ${data.id} and user_id = ${context.userId}
-    `;
-    if (!header[0]) throw new Error("فاکتور یافت نشد");
-    const lines = await sql<{ id: number; quantity: unknown; received_qty: unknown; item_id: number | null }>`
-      select id, quantity, received_qty, item_id from purchases
-      where invoice_id = ${data.id} and user_id = ${context.userId}
-    `;
-    const wh = data.warehouseName.trim();
-    if (!wh) throw new Error("گدام را انتخاب کنید");
-    if (data.mode === "full") {
-      await sql`
-        update purchases set received_qty = quantity, warehouse_name = ${wh}
+    await guard(context.userId, "purchase");
+    // STR-03: line quantities, item categories and the invoice status change together; the invoice row is locked so two partial receives are applied one after the other.
+    return withTransaction(async (sql) => {
+      const header = await sql<{ id: number }>`
+        select id from purchase_invoices where id = ${data.id} and user_id = ${context.userId}
+        for update
+      `;
+      if (!header[0]) throw new Error("فاکتور یافت نشد");
+      const lines = await sql<{ id: number; quantity: unknown; received_qty: unknown; item_id: number | null }>`
+        select id, quantity, received_qty, item_id from purchases
         where invoice_id = ${data.id} and user_id = ${context.userId}
       `;
-    } else {
-      for (const l of data.lines) {
-        const row = lines.find((x) => x.id === l.id);
-        if (!row) continue;
-        const prev = row.received_qty == null ? 0 : num(row.received_qty);
-        const next = Math.min(num(row.quantity), Math.max(0, prev + l.receivedQty));
+      const wh = data.warehouseName.trim();
+      if (!wh) throw new Error("گدام را انتخاب کنید");
+      if (data.mode === "full") {
         await sql`
-          update purchases set received_qty = ${next}, warehouse_name = ${wh}, notes = ${l.notes}
-          where id = ${l.id} and user_id = ${context.userId}
+          update purchases set received_qty = quantity, warehouse_name = ${wh}
+          where invoice_id = ${data.id} and user_id = ${context.userId}
         `;
-      }
-    }
-    if (data.categoryId) {
-      for (const l of lines) {
-        if (l.item_id) {
-          await sql`update items set category_id = ${data.categoryId} where id = ${l.item_id} and user_id = ${context.userId}`;
+      } else {
+        for (const l of data.lines) {
+          const row = lines.find((x) => x.id === l.id);
+          if (!row) continue;
+          const prev = row.received_qty == null ? 0 : num(row.received_qty);
+          const next = Math.min(num(row.quantity), Math.max(0, prev + l.receivedQty));
+          await sql`
+            update purchases set received_qty = ${next}, warehouse_name = ${wh}, notes = ${l.notes}
+            where id = ${l.id} and user_id = ${context.userId}
+          `;
         }
       }
-    }
-    const after = await sql<{ quantity: unknown; received_qty: unknown }>`
-      select quantity, received_qty from purchases where invoice_id = ${data.id} and user_id = ${context.userId}
-    `;
-    const arrived = after.every((l) => num(l.received_qty) + 1e-9 >= num(l.quantity));
-    const status: ReceiveStatus = arrived ? "arrived" : "in_transit";
-    await sql`
-      update purchase_invoices set receive_status = ${status}
-      where id = ${data.id} and user_id = ${context.userId}
-    `;
-    return { status };
+      if (data.categoryId) {
+        for (const l of lines) {
+          if (l.item_id) {
+            await sql`update items set category_id = ${data.categoryId} where id = ${l.item_id} and user_id = ${context.userId}`;
+          }
+        }
+      }
+      const after = await sql<{ quantity: unknown; received_qty: unknown }>`
+        select quantity, received_qty from purchases where invoice_id = ${data.id} and user_id = ${context.userId}
+      `;
+      const arrived = after.every((l) => num(l.received_qty) + 1e-9 >= num(l.quantity));
+      const status: ReceiveStatus = arrived ? "arrived" : "in_transit";
+      await sql`
+        update purchase_invoices set receive_status = ${status}
+        where id = ${data.id} and user_id = ${context.userId}
+      `;
+      return { status };
+    });
   });
 
 export const listSaleInvoices = createServerFn({ method: "GET" })

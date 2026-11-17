@@ -1,4 +1,5 @@
 import { createServerFn } from "@tanstack/react-start";
+import { withTransaction } from "@/lib/db";
 import { authMiddleware } from "@/lib/auth/middleware";
 import { formatMoney, nextInvoiceNo, num, text, todayIso } from "@/lib/format";
 import type { Party, WorkerDeliveryLine, WorkerLedger, WorkerModelAgg, WorkerPayment } from "@/lib/types";
@@ -495,30 +496,39 @@ export const updateWorkerDelivery = createServerFn({ method: "POST" })
     }) => d,
   )
   .handler(async ({ context, data }) => {
-    const { sql } = await guard(context.userId, "workers");
+    await guard(context.userId, "workers");
     if (!data.occurredOn) throw new Error("تاریخ را وارد کنید");
     if (data.quantity <= EPS) throw new Error("تعداد تحویل باید بزرگ‌تر از صفر باشد");
-    const head = await loadDeliveryHead(sql, context.userId, data.id);
-    if (!head) throw new Error("ردیف تحویل یافت نشد");
-    await assertContractOrder(sql, context.userId, head.workerId);
-    const before = await loadRootBundle(sql, context.userId, head.rootId);
-    const after = planDeliveryQtyChange(before.orders, before.deliveries, head.rootId, head.id, data.quantity);
-    await applyDeliveryPlan(sql, context.userId, head.rootId, head.productId, before, after);
-    const still = await loadDeliveryHead(sql, context.userId, head.id);
-    if (!still) return { ok: true as const };
-    await sql`
-      update work_deliveries set occurred_on = ${data.occurredOn}
-      where id = ${still.id} and user_id = ${context.userId}
-    `;
-    if (still.toWarehouse) {
-      if (data.toWorkerId != null) throw new Error("تحویل به گدام را نمی‌توان به کارگر منتقل کرد");
+    // STR-03: quantity plan, date and worker change are one transaction (any later error undoes the earlier writes).
+    return withTransaction(async (sql) => {
+      const head = await loadDeliveryHead(sql, context.userId, data.id);
+      if (!head) throw new Error("ردیف تحویل یافت نشد");
+      await assertContractOrder(sql, context.userId, head.workerId);
+      // STR-03: validate the target before the first write.
+      if (head.toWarehouse) {
+        if (data.toWorkerId != null) throw new Error("تحویل به گدام را نمی‌توان به کارگر منتقل کرد");
+      } else if ((data.toWorkerId === undefined ? head.toWorkerId : data.toWorkerId) == null) {
+        throw new Error("کارگر مرحله بعد را انتخاب کنید");
+      }
+      const before = await loadRootBundle(sql, context.userId, head.rootId);
+      const after = planDeliveryQtyChange(before.orders, before.deliveries, head.rootId, head.id, data.quantity);
+      await applyDeliveryPlan(sql, context.userId, head.rootId, head.productId, before, after);
+      const still = await loadDeliveryHead(sql, context.userId, head.id);
+      if (!still) return { ok: true as const };
+      await sql`
+        update work_deliveries set occurred_on = ${data.occurredOn}
+        where id = ${still.id} and user_id = ${context.userId}
+      `;
+      if (still.toWarehouse) {
+        if (data.toWorkerId != null) throw new Error("تحویل به گدام را نمی‌توان به کارگر منتقل کرد");
+        return { ok: true as const };
+      }
+      const nextId = data.toWorkerId === undefined ? still.toWorkerId : data.toWorkerId;
+      if (nextId == null) throw new Error("کارگر مرحله بعد را انتخاب کنید");
+      if (nextId === still.toWorkerId) return { ok: true as const };
+      await reassignDeliveryWorker(sql, context.userId, still, nextId);
       return { ok: true as const };
-    }
-    const nextId = data.toWorkerId === undefined ? still.toWorkerId : data.toWorkerId;
-    if (nextId == null) throw new Error("کارگر مرحله بعد را انتخاب کنید");
-    if (nextId === still.toWorkerId) return { ok: true as const };
-    await reassignDeliveryWorker(sql, context.userId, still, nextId);
-    return { ok: true as const };
+    });
   });
 
 async function reassignDeliveryWorker(
@@ -558,14 +568,17 @@ export const deleteWorkerDelivery = createServerFn({ method: "POST" })
   .middleware([authMiddleware])
   .validator((d: { id: number }) => d)
   .handler(async ({ context, data }) => {
-    const { sql } = await guard(context.userId, "workers");
-    const head = await loadDeliveryHead(sql, context.userId, data.id);
-    if (!head) throw new Error("ردیف تحویل یافت نشد");
-    await assertContractOrder(sql, context.userId, head.workerId);
-    const before = await loadRootBundle(sql, context.userId, head.rootId);
-    const after = planDeliveryQtyChange(before.orders, before.deliveries, head.rootId, head.id, 0);
-    await applyDeliveryPlan(sql, context.userId, head.rootId, head.productId, before, after);
-    return { ok: true as const };
+    await guard(context.userId, "workers");
+    // STR-03: the whole delivery plan is applied in one transaction.
+    return withTransaction(async (sql) => {
+      const head = await loadDeliveryHead(sql, context.userId, data.id);
+      if (!head) throw new Error("ردیف تحویل یافت نشد");
+      await assertContractOrder(sql, context.userId, head.workerId);
+      const before = await loadRootBundle(sql, context.userId, head.rootId);
+      const after = planDeliveryQtyChange(before.orders, before.deliveries, head.rootId, head.id, 0);
+      await applyDeliveryPlan(sql, context.userId, head.rootId, head.productId, before, after);
+      return { ok: true as const };
+    });
   });
 
 export const deleteWorkerPayment = createServerFn({ method: "POST" })
@@ -606,29 +619,32 @@ export const resetWorkerAccounts = createServerFn({ method: "POST" })
     }
     if (!valid.length) throw new Error("کارگر یافت نشد");
 
-    for (const workerId of valid) {
-      await sql`
-        delete from worker_payments where user_id = ${context.userId} and worker_id = ${workerId}
-      `;
-      const orders = await sql<{ id: number }>`
-        select id from work_orders where user_id = ${context.userId} and worker_id = ${workerId}
-      `;
-      for (const o of orders) {
-        await sql`delete from work_order_alloc where user_id = ${context.userId} and work_order_id = ${o.id}`;
-        await sql`delete from work_deliveries where user_id = ${context.userId} and work_order_id = ${o.id}`;
-        await sql`delete from work_deliveries where user_id = ${context.userId} and to_work_order_id = ${o.id}`;
-        await sql`delete from work_orders where id = ${o.id} and user_id = ${context.userId}`;
-      }
-      const recs = await sql<{ id: number }>`
-        select id from recurring_expenses where user_id = ${context.userId} and worker_id = ${workerId}
-      `;
-      for (const rec of recs) {
-        await sql`delete from recurring_periods where user_id = ${context.userId} and recurring_id = ${rec.id}`;
+    // STR-03: all workers are reset together or not at all.
+    return withTransaction(async (sql) => {
+      for (const workerId of valid) {
         await sql`
-          update recurring_expenses set start_on = ${todayIso()}
-          where id = ${rec.id} and user_id = ${context.userId}
+          delete from worker_payments where user_id = ${context.userId} and worker_id = ${workerId}
         `;
+        const orders = await sql<{ id: number }>`
+          select id from work_orders where user_id = ${context.userId} and worker_id = ${workerId}
+        `;
+        for (const o of orders) {
+          await sql`delete from work_order_alloc where user_id = ${context.userId} and work_order_id = ${o.id}`;
+          await sql`delete from work_deliveries where user_id = ${context.userId} and work_order_id = ${o.id}`;
+          await sql`delete from work_deliveries where user_id = ${context.userId} and to_work_order_id = ${o.id}`;
+          await sql`delete from work_orders where id = ${o.id} and user_id = ${context.userId}`;
+        }
+        const recs = await sql<{ id: number }>`
+          select id from recurring_expenses where user_id = ${context.userId} and worker_id = ${workerId}
+        `;
+        for (const rec of recs) {
+          await sql`delete from recurring_periods where user_id = ${context.userId} and recurring_id = ${rec.id}`;
+          await sql`
+            update recurring_expenses set start_on = ${todayIso()}
+            where id = ${rec.id} and user_id = ${context.userId}
+          `;
+        }
       }
-    }
-    return { ok: true as const, count: valid.length };
+      return { ok: true as const, count: valid.length };
+    });
   });
