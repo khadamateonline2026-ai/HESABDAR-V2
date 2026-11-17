@@ -2,7 +2,7 @@ import { FileDown, ImageDown, Printer, X } from "lucide-react";
 import { useRef, type ReactNode } from "react";
 import { toast } from "sonner";
 import { DateField } from "@/components/date-picker";
-import { capturePng, downloadPdf } from "@/components/invoice-ui";
+import { capturePng, downloadPdf, printSheet } from "@/components/invoice-ui";
 import { cn } from "@/lib/utils";
 
 export function DateRangeBar({
@@ -125,7 +125,7 @@ export function ReportSheet({
         {children}
       </div>
       <div className="no-print mt-3 grid grid-cols-3 gap-1">
-        <IconAction label="چاپ" onClick={() => window.print()}>
+        <IconAction label="چاپ" onClick={() => void printSheet(ref.current).catch(() => toast.error("چاپ ناکام شد"))}>
           <Printer className="size-4" />
         </IconAction>
         <IconAction label="ذخیره عکس" onClick={() => void saveImage()}>

@@ -12,6 +12,7 @@ import { saveAccount } from "@/lib/api/finance";
 import { queryClient } from "@/lib/query-client";
 import { cn } from "@/lib/utils";
 import { formatMoney, formatMoneyInt, parseAmount } from "@/lib/format";
+import { sliceBreaks } from "@/lib/print-slices";
 import type { Item, Named } from "@/lib/types";
 
 export function AfAmount({
@@ -532,6 +533,103 @@ export async function downloadPdf(node: HTMLElement, filename: string) {
   pdf.save(`${filename}.pdf`);
 }
 
+/**
+ * چاپ = دقیقاً همان عکس ذخیره‌شده (همان capturePng). برای برگشت به چاپ قدیمی
+ * (CSS print-sheet) این را false کن.
+ */
+export const PRINT_AS_IMAGE = true;
+
+const PRINT_ROOT_ID = "print-image-root";
+/** A4 با حاشیه ۸mm (مثل @page در styles.css) */
+const PAGE_W_MM = 210 - 16;
+const PAGE_H_MM = 297 - 16 - 3; // ۳mm حاشیه اطمینان تا صفحه خالی اضافه نیاید
+
+function cleanRowTester(img: HTMLImageElement) {
+  const line = document.createElement("canvas");
+  line.width = img.width;
+  line.height = 1;
+  const ctx = line.getContext("2d", { willReadFrequently: true });
+  return (y: number) => {
+    if (!ctx) return false;
+    ctx.clearRect(0, 0, img.width, 1);
+    ctx.drawImage(img, 0, y, img.width, 1, 0, 0, img.width, 1);
+    const row = ctx.getImageData(0, 0, img.width, 1).data;
+    const r0 = row[0], g0 = row[1], b0 = row[2];
+    const step = Math.max(1, Math.floor(img.width / 400)) * 4;
+    for (let i = step; i < row.length; i += step) {
+      if (Math.abs(row[i] - r0) + Math.abs(row[i + 1] - g0) + Math.abs(row[i + 2] - b0) > 24) return false;
+    }
+    return true;
+  };
+}
+
+function cleanupPrintRoot() {
+  document.getElementById(PRINT_ROOT_ID)?.remove();
+  document.documentElement.classList.remove("printing-image");
+}
+
+/** چاپ یک برگه (فاکتور/قبض/گزارش) به شکل همان عکس، چندصفحه‌ای برای موارد بلند. */
+export async function printSheet(node: HTMLElement | null) {
+  if (!node) return;
+  if (!PRINT_AS_IMAGE) {
+    window.print();
+    return;
+  }
+  cleanupPrintRoot();
+  const wait = toast.loading("آماده‌سازی چاپ…");
+  let url: string;
+  const img = new Image();
+  try {
+    url = await capturePng(node);
+    img.src = url;
+    await img.decode();
+  } finally {
+    toast.dismiss(wait);
+  }
+  const pageHpx = Math.floor((img.width * PAGE_H_MM) / PAGE_W_MM);
+  const root = document.createElement("div");
+  root.id = PRINT_ROOT_ID;
+  root.setAttribute("aria-hidden", "true");
+  const addPage = (src: string, fit = false) => {
+    const page = document.createElement("div");
+    page.className = fit ? "print-image-page print-image-fit" : "print-image-page";
+    const el = document.createElement("img");
+    el.src = src;
+    el.alt = "";
+    page.appendChild(el);
+    root.appendChild(page);
+  };
+  // کمی بلندتر از یک صفحه → کوچک‌شده در همان یک صفحه (نه یک صفحه اضافه برای چند خط).
+  if (img.height <= pageHpx * 1.15) addPage(url, true);
+  else {
+    const starts = sliceBreaks(img.height, pageHpx, cleanRowTester(img));
+    for (let i = 0; i < starts.length; i++) {
+      const y = starts[i];
+      const h = (starts[i + 1] ?? img.height) - y;
+      const part = document.createElement("canvas");
+      part.width = img.width;
+      part.height = h;
+      const pctx = part.getContext("2d");
+      if (!pctx) {
+        root.replaceChildren();
+        addPage(url);
+        break;
+      }
+      pctx.drawImage(img, 0, y, img.width, h, 0, 0, img.width, h);
+      addPage(part.toDataURL("image/png"));
+    }
+  }
+  document.body.appendChild(root);
+  await Promise.all([...root.querySelectorAll("img")].map((el) => el.decode().catch(() => undefined)));
+  document.documentElement.classList.add("printing-image");
+  const done = () => {
+    window.removeEventListener("afterprint", done);
+    cleanupPrintRoot();
+  };
+  window.addEventListener("afterprint", done);
+  window.print();
+}
+
 export function InvoiceBrand({
   logo,
   name,
@@ -662,7 +760,10 @@ export function SheetActions({
   }
   return (
     <div className="no-print mt-3 flex flex-wrap justify-end gap-2">
-      <ToolBtn label="چاپ" onClick={() => window.print()}>
+      <ToolBtn
+        label="چاپ"
+        onClick={() => void printSheet(targetRef.current).catch(() => toast.error("چاپ ناکام شد"))}
+      >
         <Printer className="size-4" />
       </ToolBtn>
       {image ? (
