@@ -25,6 +25,7 @@ import { todayIso } from "@/lib/format";
 import { headerDateParts } from "@/lib/jalali";
 import { canView, type Area } from "@/lib/permissions";
 import { applyAppearance, PrefsProvider } from "@/lib/prefs";
+import { createBusyIndicator } from "@/lib/busy-indicator";
 import { queryClient } from "@/lib/query-client";
 import { DEFAULT_SETTINGS, ROLE_LABELS } from "@/lib/types";
 import { cn } from "@/lib/utils";
@@ -112,35 +113,26 @@ export function AppShell() {
 
   useEffect(() => {
     const orig = window.fetch.bind(window);
-    let active = 0;
-    let timer: number | null = null;
+    const root = document.documentElement;
+    const busy = createBusyIndicator({
+      setVisible: (on) => root.classList.toggle("app-busy", on),
+      fetching: () => queryClient.isFetching(),
+      setTimeout: (fn, ms) => window.setTimeout(fn, ms),
+      clearTimeout: (h) => window.clearTimeout(h as number),
+    });
     window.fetch = (input, init) => {
       const method = String(
         init?.method || (input instanceof Request ? input.method : "GET"),
       ).toUpperCase();
       if (method !== "POST") return orig(input, init);
-      active += 1;
-      if (timer == null && !document.documentElement.classList.contains("app-busy")) {
-        timer = window.setTimeout(() => {
-          timer = null;
-          if (active > 0) document.documentElement.classList.add("app-busy");
-        }, 200);
-      }
-      return orig(input, init).finally(() => {
-        active = Math.max(0, active - 1);
-        if (active === 0) {
-          if (timer != null) {
-            window.clearTimeout(timer);
-            timer = null;
-          }
-          document.documentElement.classList.remove("app-busy");
-        }
-      });
+      busy.begin();
+      return orig(input, init).finally(() => busy.end());
     };
+    const unsub = queryClient.getQueryCache().subscribe(() => busy.sync());
     return () => {
       window.fetch = orig;
-      if (timer != null) window.clearTimeout(timer);
-      document.documentElement.classList.remove("app-busy");
+      unsub();
+      busy.dispose();
     };
   }, []);
 
