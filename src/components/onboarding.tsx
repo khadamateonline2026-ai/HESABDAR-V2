@@ -115,7 +115,8 @@ export function RoleGateModal({
       if (!displayName) throw new Error("اسم لازم است");
       const res = await changeRole({ data: { role, code, displayName } });
       if (res.roleToken) setRoleToken(res.roleToken);
-      await queryClient.invalidateQueries({ queryKey: ["bootstrap"] });
+      // SEC-02: pages load their data only after the role is unlocked.
+      await queryClient.invalidateQueries();
       onDone();
     } catch (err) {
       setError(err instanceof Error ? err.message : "کد نقش نادرست است");

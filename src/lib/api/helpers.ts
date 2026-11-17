@@ -33,7 +33,20 @@ import {
   parseAccountKind,
 } from "@/lib/types";
 
+/** SEC-02: shown when data is requested before a role PIN was entered in this session. */
+export const ROLE_REQUIRED = "نقش این نشست انتخاب نشده است؛ نخست نقش و رمز آن را وارد کنید";
+
+/**
+ * SEC-02: database access for workspace data. Nothing is read or written
+ * until this session has unlocked a role with its PIN.
+ */
 export async function sqlOf(): Promise<Sql> {
+  if (!peekSessionRole()) throw new Error(ROLE_REQUIRED);
+  return getSql();
+}
+
+/** Only for the role gate itself (bootstrap, onboarding, choosing a role, PIN reset). */
+export async function sqlBeforeRole(): Promise<Sql> {
   return getSql();
 }
 

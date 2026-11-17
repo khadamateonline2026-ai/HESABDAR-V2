@@ -334,7 +334,7 @@ export function AppShell() {
       </aside>
 
       <main className={cn("stage mx-auto w-full max-w-6xl px-4 pb-28 pt-2 sm:px-8", GLASS_SECTIONS && GLASS_SECTION_RE.test(pathname) && "glass-sections")}>
-        {bootstrap.isPending ? (
+        {bootstrap.isPending || needsSessionRole ? (
           <div className="h-40 animate-pulse rounded-md bg-border/60" />
         ) : (
           <Outlet />

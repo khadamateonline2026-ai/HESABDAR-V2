@@ -1,3 +1,4 @@
+import type { Sql } from "@/lib/db";
 import { createServerFn } from "@tanstack/react-start";
 import { createHash, randomBytes, randomInt } from "node:crypto";
 import { authMiddleware } from "@/lib/auth/middleware";
@@ -18,45 +19,64 @@ import {
   rethrow,
   seedDefaults,
   sessionRoleState,
+  sqlBeforeRole,
   sqlOf,
 } from "./helpers";
 import { peekSessionRole } from "@/lib/session-role-slot";
 
-export const getBootstrap = createServerFn({ method: "GET" })
-  .middleware([authMiddleware])
-  .handler(async ({ context }) => {
-    const sql = await sqlOf();
-    const owner = await getProfileRow(sql, context.userId);
-    if (!owner) {
-      return {
-        profile: null,
-        company: null,
-        catalogs: emptyCatalogs(),
-        settings: DEFAULT_SETTINGS,
-        staff: [],
-        needsSessionRole: false,
-      };
-    }
-    const { profile, needsSessionRole } = sessionRoleState(owner);
-    const companies = await sql`select * from companies where user_id = ${context.userId}`;
-    const [catalogs, settings, staff] = await Promise.all([
-      loadCatalogs(sql, context.userId),
-      loadSettings(sql, context.userId),
-      loadStaff(sql, context.userId, owner),
-    ]);
-    // Never send role PIN hashes (or legacy codes) to the client.
-    const safeSettings = {
-      ...settings,
-      roleCodes: { supervisor: "", accountant: "", seller: "" },
+/** Bootstrap payload (exported for tests, SEC-02). */
+export async function bootstrapFor(sql: Sql, userId: string) {
+  const owner = await getProfileRow(sql, userId);
+  if (!owner) {
+    return {
+      profile: null,
+      company: null,
+      catalogs: emptyCatalogs(),
+      settings: DEFAULT_SETTINGS,
+      staff: [],
+      needsSessionRole: false,
     };
+  }
+  const { profile, needsSessionRole } = sessionRoleState(owner);
+  const companies = await sql`select * from companies where user_id = ${userId}`;
+  if (needsSessionRole) {
+    // SEC-02: before a role PIN is entered only the company header and the
+    // appearance settings are sent — no balances, parties, items or staff.
+    const settings = await loadSettings(sql, userId);
     return {
       profile,
       company: companies[0] ? mapCompany(companies[0] as Record<string, unknown>) : null,
-      catalogs,
-      settings: safeSettings,
-      staff,
+      catalogs: emptyCatalogs(),
+      settings: { ...settings, roleCodes: { supervisor: "", accountant: "", seller: "" } },
+      staff: [],
       needsSessionRole,
     };
+  }
+  const [catalogs, settings, staff] = await Promise.all([
+    loadCatalogs(sql, userId),
+    loadSettings(sql, userId),
+    loadStaff(sql, userId, owner),
+  ]);
+  // Never send role PIN hashes (or legacy codes) to the client.
+  const safeSettings = {
+    ...settings,
+    roleCodes: { supervisor: "", accountant: "", seller: "" },
+  };
+  return {
+    profile,
+    company: companies[0] ? mapCompany(companies[0] as Record<string, unknown>) : null,
+    catalogs,
+    settings: safeSettings,
+    staff,
+    needsSessionRole,
+  };
+}
+
+export const getBootstrap = createServerFn({ method: "GET" })
+  .middleware([authMiddleware])
+  .handler(async ({ context }) => {
+    const sql = await sqlBeforeRole();
+    return bootstrapFor(sql, context.userId);
   });
 
 /** Clears the httpOnly role cookie so the next login must pick name+role again. */
@@ -92,7 +112,7 @@ export const completeOnboarding = createServerFn({ method: "POST" })
     assertPinShape(supervisor);
     assertPinShape(accountant);
     assertPinShape(seller);
-    const sql = await sqlOf();
+    const sql = await sqlBeforeRole();
     const existing = await getProfileRow(sql, context.userId);
     if (existing) throw new Error("حساب قبلاً تنظیم شده است");
     const hashedSupervisor = hashPin(supervisor);
@@ -197,7 +217,7 @@ export const changeRole = createServerFn({ method: "POST" })
   .middleware([authMiddleware])
   .validator((d: { role: Role; code: string; displayName?: string }) => d)
   .handler(async ({ context, data }) => {
-    const sql = await sqlOf();
+    const sql = await sqlBeforeRole();
     const owner = await getProfileRow(sql, context.userId);
     if (!owner) throw new Error("نخست نام و نقش خود را ثبت کنید");
     if (data.role !== "supervisor" && data.role !== "accountant" && data.role !== "seller") {
@@ -285,7 +305,7 @@ async function accountEmail(sql: Awaited<ReturnType<typeof sqlOf>>, userId: stri
 export const requestRoleReset = createServerFn({ method: "POST" })
   .middleware([authMiddleware])
   .handler(async ({ context }) => {
-    const sql = await sqlOf();
+    const sql = await sqlBeforeRole();
     await assertRoleNotLockedDb(sql, context.userId);
     const owner = await getProfileRow(sql, context.userId);
     if (!owner) throw new Error("نخست شرکت را تنظیم کنید");
@@ -333,7 +353,7 @@ export const applyRoleResetLink = createServerFn({ method: "POST" })
     if (role !== "accountant" && role !== "seller" && role !== "supervisor") throw new Error("نقش نامعتبر است");
     if (!/^\d{4,}$/.test(pin)) throw new Error("کد نقش باید حداقل ۴ رقم باشد");
     assertPinShape(pin);
-    const sql = await sqlOf();
+    const sql = await sqlBeforeRole();
     const h = tokenHash(token);
     const rows = await sql<{ user_id: string; role_reset_exp: string | null }>`
       select user_id, role_reset_exp from app_settings where role_reset_hash = ${h} limit 1
@@ -364,7 +384,7 @@ export const applyRoleReset = createServerFn({ method: "POST" })
     assertPinShape(supervisor);
     assertPinShape(accountant);
     assertPinShape(seller);
-    const sql = await sqlOf();
+    const sql = await sqlBeforeRole();
     // SEC-03: the emailed code goes through the same persistent limiter.
     await attemptRoleSecret(
       sql,
