@@ -44,11 +44,13 @@ export const authMiddleware = createMiddleware({ type: "function" })
     // (bearer hook on the client). A plain `./isolation` path was renamed to
     // `isolation.server.ts` — keep this import in sync so image `tsc` resolves
     // it, and so Vite does not ship `@tanstack/react-start/server` to the browser.
-    const { assertSameSiteRequest } = await import("./isolation.server");
+    const { assertSameSiteRequest, assertOfflineOwner } = await import("./isolation.server");
     const { requireUserId } = await import("./verify.server");
     // Reject scripted cross-site/sibling requests before touching per-user data.
     assertSameSiteRequest();
     const userId = await requireUserId(context.bearerToken);
+    // SEC-05: never run another user's queued offline write under this session.
+    assertOfflineOwner(userId);
     const { bindSessionRole, readRoleToken } = await import("./session-role.server");
     let roleToken = context.roleToken;
     if (!roleToken) {

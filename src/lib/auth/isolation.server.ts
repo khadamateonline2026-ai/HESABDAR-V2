@@ -50,3 +50,23 @@ export function assertSameSiteRequest(): void {
   if (isTopLevelGet) return;
   throw new CrossSiteRequestError();
 }
+
+/** SEC-05: an offline write replayed under a different signed-in user. */
+export class OfflineOwnerMismatchError extends Error {
+  readonly status = 409;
+  constructor() {
+    super("این ثبت آفلاین متعلق به کاربر دیگری است و فرستاده نشد");
+    this.name = "OfflineOwnerMismatchError";
+  }
+}
+
+/**
+ * SEC-05: queued offline writes carry the id of the user who made them
+ * (`x-hesabdar-owner`). Refuse them when a different user is signed in now.
+ */
+export function assertOfflineOwner(userId: string): void {
+  const request = getRequest();
+  if (!request) return;
+  const claimed = request.headers.get("x-hesabdar-owner");
+  if (claimed && claimed !== userId) throw new OfflineOwnerMismatchError();
+}

@@ -5,7 +5,8 @@ import { AuthProvider } from "@/lib/auth/provider";
 import { PreviewHostBridge } from "@/components/preview-host-bridge";
 import { queryClient } from "@/lib/query-client";
 import { restoreCachedAppearance } from "@/lib/prefs";
-import { installOffline } from "@/lib/offline/engine";
+import { installOffline, setOfflineOwner } from "@/lib/offline/engine";
+import { useCurrentUserState } from "@/lib/auth/use-current-user";
 import appCss from "../styles.css?url";
 
 installOffline();
@@ -41,6 +42,17 @@ function AppearanceBoot() {
   return null;
 }
 
+/** SEC-05: keeps the offline cache/queue bound to the signed-in user (renders nothing). */
+function OfflineOwnerSync() {
+  const { user, isPending } = useCurrentUserState();
+  const userId = user?.id ?? null;
+  useEffect(() => {
+    if (isPending) return;
+    void setOfflineOwner(userId);
+  }, [userId, isPending]);
+  return null;
+}
+
 function RootDocument() {
   return (
     <html lang="fa-AF" dir="rtl" className="antialiased" suppressHydrationWarning>
@@ -51,6 +63,7 @@ function RootDocument() {
         <AppearanceBoot />
         <PreviewHostBridge />
         <AuthProvider>
+          <OfflineOwnerSync />
           <QueryClientProvider client={queryClient}>
             <Outlet />
           </QueryClientProvider>

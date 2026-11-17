@@ -1,4 +1,4 @@
-const CACHE = "hesabdar-shell-v2";
+const CACHE = "hesabdar-shell-v3";
 const PRECACHE = ["/", "/hesabdar.webmanifest", "/favicon.svg", "/icon-192.png", "/icon-512.png"];
 
 self.addEventListener("install", (event) => {
@@ -30,7 +30,9 @@ self.addEventListener("fetch", (event) => {
     url.pathname.includes("change-password") ||
     url.pathname.includes("reset-password") ||
     url.pathname.includes("sign-up") ||
-    url.pathname.startsWith("/api/")
+    url.pathname.startsWith("/api/") ||
+    // SEC-05: server-function reads are per-user data; never keep them in the shared shell cache
+    url.pathname.startsWith("/_serverFn")
   ) {
     return;
   }

@@ -1,5 +1,6 @@
 import { CONFLICT_USER_MESSAGE } from "@/lib/offline/conflict-policy";
 import { queryClient } from "@/lib/query-client";
+import { OFFLINE_OWNER_HEADER, mustWipe, partitionQueue, previousOwner } from "@/lib/offline/owner-policy";
 
 type Phase = "online" | "offline" | "syncing";
 
@@ -17,6 +18,8 @@ type Row = {
   clientAt: number;
   key: string;
   superseded: boolean;
+  /** SEC-05: user id that queued this write; replayed only for that user. */
+  owner?: string | null;
 };
 
 type Cached = {
@@ -31,6 +34,7 @@ const DB = "hesabdar-offline";
 const QUEUE = "queue";
 const CACHE = "gets";
 const SESSION_KEY = "hesabdar-offline-session";
+const OWNER_KEY = "hesabdar-offline-owner";
 const SAVE_URL = /save(SaleInvoice|PurchaseInvoice|PartyPayment|CatalogItem|OpeningStock|Sale|Purchase)|receivePurchaseInvoice/;
 const ONLINE_ONLY = /sign-up|change-password|reset-password|forget-password|request-password-reset/;
 
@@ -61,6 +65,90 @@ let status: OfflineStatus = {
   warning: "",
 };
 let flushing = false;
+/** SEC-05: the signed-in user this tab's offline data belongs to (null = unknown / signed out). */
+let owner: string | null = null;
+
+function readLocal(key: string): string | null {
+  try {
+    return localStorage.getItem(key);
+  } catch {
+    return null;
+  }
+}
+
+function writeLocal(key: string, value: string | null) {
+  try {
+    if (value == null) localStorage.removeItem(key);
+    else localStorage.setItem(key, value);
+  } catch {
+    /* ignore */
+  }
+}
+
+async function clearStore(name: string) {
+  const db = await openDb();
+  const tx = db.transaction(name, "readwrite");
+  tx.objectStore(name).clear();
+  await txDone(tx);
+}
+
+/** Drop cached server responses (per-user data) and the cached session. */
+async function clearCachedReads() {
+  writeLocal(SESSION_KEY, null);
+  await clearStore(CACHE).catch(() => undefined);
+  await clearStore("docs").catch(() => undefined);
+  try {
+    if (typeof caches !== "undefined") {
+      for (const k of await caches.keys()) {
+        const cache = await caches.open(k);
+        for (const req of await cache.keys()) {
+          if (new URL(req.url).pathname.startsWith("/_serverFn")) await cache.delete(req);
+        }
+      }
+    }
+  } catch {
+    /* ignore */
+  }
+}
+
+/**
+ * SEC-05: wipe everything this device holds for the signed-in user — the
+ * IndexedDB read cache, the offline write queue, the cached session — and
+ * forget the owner. Called on sign-out and when a different user signs in.
+ */
+export async function clearOfflineData(): Promise<void> {
+  await clearCachedReads();
+  await clearStore(QUEUE).catch(() => undefined);
+  writeLocal(OWNER_KEY, null);
+  owner = null;
+  emit({ pending: 0, warning: "" });
+}
+
+/**
+ * SEC-05: tell the engine who is signed in. A different user than the one
+ * who left data here wipes the cache and queue first; null (signed out)
+ * drops cached reads but keeps queued writes, which only that same user can
+ * ever replay.
+ */
+export async function setOfflineOwner(userId: string | null): Promise<void> {
+  if (typeof window === "undefined") return;
+  const previous = previousOwner(readLocal(OWNER_KEY), readLocal(SESSION_KEY));
+  if (!userId) {
+    owner = null;
+    await clearCachedReads();
+    return;
+  }
+  if (mustWipe(previous, userId)) await clearOfflineData();
+  owner = userId;
+  writeLocal(OWNER_KEY, userId);
+  await refreshCount();
+  if (navigator.onLine) void flush();
+}
+
+/** Best-effort sync before sign-out (bounded so sign-out never hangs). */
+export async function flushOfflineQueue(timeoutMs = 5000): Promise<void> {
+  await Promise.race([flush(), new Promise<void>((r) => setTimeout(r, timeoutMs))]).catch(() => undefined);
+}
 
 function emit(partial: Partial<OfflineStatus>) {
   status = { ...status, ...partial };
@@ -142,7 +230,7 @@ async function deleteQueue(id: number) {
 
 async function countPending() {
   const rows = await listQueue();
-  return rows.filter((r) => !r.superseded).length;
+  return rows.filter((r) => !r.superseded && (!owner || (r.owner ?? owner) === owner)).length;
 }
 
 async function refreshCount() {
@@ -224,11 +312,17 @@ function onlineOnlyResponse() {
 
 async function flush() {
   if (flushing || typeof navigator === "undefined" || !navigator.onLine || !native) return;
+  // SEC-05: nothing is replayed until we know who is signed in.
+  if (!owner) return;
   flushing = true;
   emit({ phase: "syncing" });
   let warning = "";
   try {
-    const rows = await listQueue();
+    const all = await listQueue();
+    const previous = previousOwner(readLocal(OWNER_KEY), readLocal(SESSION_KEY));
+    const { replay: rows, drop } = partitionQueue(all, owner, previous);
+    // Another user's queued writes are never sent under this session.
+    for (const row of drop) await deleteQueue(row.id);
     for (const row of rows) {
       if (row.superseded) {
         await deleteQueue(row.id);
@@ -237,6 +331,7 @@ async function flush() {
       }
       const headers = new Headers(row.headers);
       headers.set("x-hesabdar-replay", "1");
+      headers.set(OFFLINE_OWNER_HEADER, owner);
       let res: Response;
       try {
         res = await native(row.url, { method: "POST", headers, body: row.body, credentials: "include" });
@@ -296,9 +391,16 @@ async function offlineFetch(input: RequestInfo | URL, init?: RequestInit) {
   }
 
   if (ONLINE_ONLY.test(url) && !navigator.onLine) return onlineOnlyResponse();
-  if (method !== "POST" || replay || !isSaveRequest(url) || request.headers.get("x-tsr-serverfn") !== "true") {
+  if (
+    method !== "POST" ||
+    replay ||
+    !owner ||
+    !isSaveRequest(url) ||
+    request.headers.get("x-tsr-serverfn") !== "true"
+  ) {
     return native(request);
   }
+  const queuedFor = owner;
 
   const body = await request.text();
   const headers: [string, string][] = [];
@@ -316,12 +418,18 @@ async function offlineFetch(input: RequestInfo | URL, init?: RequestInit) {
     clientAt: Date.now(),
     key: entityKey(url, body),
     superseded: false,
+    owner: queuedFor,
   });
   emit({ pending: await countPending() });
 
   if (!navigator.onLine) return fakeOk();
   try {
-    const res = await native(url, { method: "POST", headers, body, credentials: "include" });
+    const res = await native(url, {
+      method: "POST",
+      headers: [...headers, [OFFLINE_OWNER_HEADER, queuedFor]],
+      body,
+      credentials: "include",
+    });
     if (res.ok) {
       const rows = await listQueue();
       const mine = rows.filter((r) => !r.superseded && r.url === url && r.body === body);
@@ -360,7 +468,6 @@ export function installOffline() {
   if ("serviceWorker" in navigator) {
     void navigator.serviceWorker.register("/sw.js").catch(() => undefined);
   }
-  void refreshCount().then(() => {
-    if (navigator.onLine) void flush();
-  });
+  // SEC-05: the first flush waits for setOfflineOwner (the signed-in user).
+  void refreshCount();
 }

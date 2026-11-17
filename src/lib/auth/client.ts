@@ -219,6 +219,11 @@ function waitForPopupToken(popup: Window): Promise<string | null> {
  * preview the local clear is sufficient, so it always resolves.
  */
 export async function signOut(redirectTo = "/"): Promise<void> {
+  // SEC-05: send what is still queued while this user is signed in, then wipe
+  // the offline cache/queue once the sign-out is confirmed.
+  const offline = await import("@/lib/offline/engine");
+  await offline.flushOfflineQueue();
+  let wiped: Promise<void> = Promise.resolve();
   await runSignOut({
     livePreview: inLivePreview(),
     hasBearer: Boolean(getBearerToken()),
@@ -228,9 +233,14 @@ export async function signOut(redirectTo = "/"): Promise<void> {
       const { error } = await authClient.signOut();
       if (error) throw new Error(error.message ?? "Sign-out failed");
     },
-    clearToken: () => setBearerToken(null),
+    clearToken: () => {
+      setBearerToken(null);
+      wiped = offline.clearOfflineData().catch(() => undefined);
+    },
     redirect: () => {
-      window.location.href = redirectTo;
+      void wiped.finally(() => {
+        window.location.href = redirectTo;
+      });
     },
   });
 }
