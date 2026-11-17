@@ -416,14 +416,6 @@ function addMonthsKeepDay(iso: string, months: number): string {
   return `${yy}-${pad2(mm)}-${pad2(day)}`;
 }
 
-function nextDue(iso: string, cadence: RecurringCadence): string {
-  if (cadence === "weekly") return addDays(iso, 7);
-  if (cadence === "quarterly") return addMonthsKeepDay(iso, 3);
-  if (cadence === "semiannual") return addMonthsKeepDay(iso, 6);
-  if (cadence === "yearly") return addMonthsKeepDay(iso, 12);
-  return addMonthsKeepDay(iso, 1);
-}
-
 function periodKey(iso: string, cadence: RecurringCadence): string {
   const [y, m] = iso.split("-");
   if (cadence === "weekly") return iso;
@@ -433,6 +425,19 @@ function periodKey(iso: string, cadence: RecurringCadence): string {
   return `${y}-${m}`;
 }
 
+/** Start of the k-th period, always counted from the original start (ACC-07: no month-end drift). */
+function periodStart(startOn: string, k: number, cadence: RecurringCadence): string {
+  if (cadence === "weekly") return addDays(startOn, 7 * k);
+  const months = cadence === "quarterly" ? 3 : cadence === "semiannual" ? 6 : cadence === "yearly" ? 12 : 1;
+  return addMonthsKeepDay(startOn, months * k);
+}
+
+/**
+ * Due periods up to `today`. Each period starts at start + k·cadence (day
+ * clamped to the month's length, so 31 Jan → 28 Feb → 31 Mar). With the
+ * "end" anchor (salaries) a period is due the day after it ends, i.e. on the
+ * next period's start.
+ */
 export function duePeriods(
   startOn: string,
   today: string,
@@ -441,16 +446,11 @@ export function duePeriods(
 ): { period: string; dueOn: string }[] {
   if (!startOn || !today) return [];
   const out: { period: string; dueOn: string }[] = [];
-  let cur = startOn;
-  let guard = 0;
-  while (guard < 520) {
-    const dueOn = anchor === "end" ? addDays(nextDue(cur, cadence), 1) : cur;
+  for (let k = 0; k < 520; k++) {
+    const cur = periodStart(startOn, k, cadence);
+    const dueOn = anchor === "end" ? periodStart(startOn, k + 1, cadence) : cur;
     if (dueOn > today) break;
     out.push({ period: periodKey(cur, cadence), dueOn });
-    const next = nextDue(cur, cadence);
-    if (next <= cur) break;
-    cur = next;
-    guard += 1;
   }
   return out;
 }
