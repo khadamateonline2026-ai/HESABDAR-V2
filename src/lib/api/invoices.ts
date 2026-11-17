@@ -122,15 +122,6 @@ async function allocInvoiceNo(
   );
 }
 
-async function ensureSaleColumns(sql: Awaited<ReturnType<typeof sqlOf>>) {
-  await sql.query("alter table sale_invoices add column if not exists closed boolean not null default false");
-  await sql.query("alter table sale_invoices add column if not exists received_fx_rate double precision not null default 0");
-  await sql.query("alter table sale_invoices add column if not exists refund_amount double precision not null default 0");
-  await sql.query("alter table sale_invoices add column if not exists refund_account_id bigint");
-  await sql.query("alter table sale_invoices add column if not exists cash_included_base double precision not null default 0");
-  await sql.query("alter table party_payments add column if not exists applied_sale_id bigint");
-  await sql.query("alter table party_payments add column if not exists fx_rate double precision not null default 0");
-}
 
 export const listPurchaseInvoices = createServerFn({ method: "GET" })
   .middleware([authMiddleware])
@@ -401,7 +392,6 @@ export const listSaleInvoices = createServerFn({ method: "GET" })
   .handler(async ({ context }) => {
     const sql = await sqlOf();
     await requireProfile(sql, context.userId);
-    await ensureSaleColumns(sql);
     const headers = await sql<Record<string, unknown>>`
       select i.*, p.name as customer_name, c.symbol as currency_symbol, a.name as account_name
       from sale_invoices i
@@ -495,7 +485,6 @@ export const saveSaleInvoice = createServerFn({ method: "POST" })
     const cleanLines = data.lines.filter((l) => l.itemName.trim() && l.quantity > 0);
     if (!cleanLines.length) throw new Error("حداقل یک ردیف کالا لازم است");
     if (!data.id && data.customerId == null) throw new Error("مشتری را انتخاب کنید");
-    await ensureSaleColumns(sql);
     await assertOwned(sql, context.userId, [
       ["parties", data.customerId],
       ["accounts", data.accountId],
@@ -699,8 +688,7 @@ export const deleteSaleInvoice = createServerFn({ method: "POST" })
   .middleware([authMiddleware])
   .validator((d: { id: number }) => d)
   .handler(async ({ context, data }) => {
-    const { sql } = await guard(context.userId, "sales");
-    await ensureSaleColumns(sql);
+    await guard(context.userId, "sales");
     await withTransaction(async (tx) => {
       await tx`update party_payments set applied_sale_id = null where user_id = ${context.userId} and applied_sale_id = ${data.id}`;
       await tx`delete from sales where invoice_id = ${data.id} and user_id = ${context.userId}`;
@@ -716,7 +704,6 @@ export const listCustomerCashTakes = createServerFn({ method: "POST" })
   .handler(async ({ context, data }) => {
     const sql = await sqlOf();
     await requireProfile(sql, context.userId);
-    await ensureSaleColumns(sql);
     const rows = await sql<Record<string, unknown>>`
       select p.id, p.amount, p.fx_rate, p.occurred_on, p.notes, p.applied_sale_id, c.symbol, c.rate_to_base
       from party_payments p

@@ -183,8 +183,6 @@ export async function loadPartySummaries(
   const bump = (map: Map<number, number>, id: number, amt: number) => map.set(id, (map.get(id) ?? 0) + amt);
 
   if (kind === "customer") {
-    await sql.query("alter table sale_invoices add column if not exists cash_included_base double precision not null default 0");
-    await sql.query("alter table party_payments add column if not exists applied_sale_id bigint");
     const sales = await sql<Record<string, unknown>>`
       select s.customer_id as party_id, s.quantity, s.unit_price, s.status, s.currency_id, s.occurred_on,
         inv.fx_enabled, inv.fx_rate, inv.currency_id as inv_currency_id

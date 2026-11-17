@@ -231,11 +231,6 @@ function resetHash(userId: string, code: string): string {
   return createHash("sha256").update(`${userId}:${code}`).digest("hex");
 }
 
-async function ensureResetColumns(sql: Awaited<ReturnType<typeof sqlOf>>) {
-  await sql.query("alter table app_settings add column if not exists role_reset_hash text");
-  await sql.query("alter table app_settings add column if not exists role_reset_exp timestamptz");
-  await sql.query("alter table app_settings add column if not exists role_codes_hashed boolean not null default false");
-}
 
 const ROLE_RESET_TTL_MS = 30 * 60 * 1000;
 const ROLE_FA: Record<string, string> = { accountant: "حسابدار", seller: "فروشنده", supervisor: "ناظر" };
@@ -291,7 +286,6 @@ export const requestRoleReset = createServerFn({ method: "POST" })
   .middleware([authMiddleware])
   .handler(async ({ context }) => {
     const sql = await sqlOf();
-    await ensureResetColumns(sql);
     await assertRoleNotLockedDb(sql, context.userId);
     const owner = await getProfileRow(sql, context.userId);
     if (!owner) throw new Error("نخست شرکت را تنظیم کنید");
@@ -340,7 +334,6 @@ export const applyRoleResetLink = createServerFn({ method: "POST" })
     if (!/^\d{4,}$/.test(pin)) throw new Error("کد نقش باید حداقل ۴ رقم باشد");
     assertPinShape(pin);
     const sql = await sqlOf();
-    await ensureResetColumns(sql);
     const h = tokenHash(token);
     const rows = await sql<{ user_id: string; role_reset_exp: string | null }>`
       select user_id, role_reset_exp from app_settings where role_reset_hash = ${h} limit 1
@@ -372,7 +365,6 @@ export const applyRoleReset = createServerFn({ method: "POST" })
     assertPinShape(accountant);
     assertPinShape(seller);
     const sql = await sqlOf();
-    await ensureResetColumns(sql);
     // SEC-03: the emailed code goes through the same persistent limiter.
     await attemptRoleSecret(
       sql,

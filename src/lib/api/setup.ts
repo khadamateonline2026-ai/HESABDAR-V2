@@ -255,12 +255,6 @@ export const savePartyCategory = createServerFn({ method: "POST" })
   .validator((d: { id?: number; kind: "customer" | "vendor" | "other" | "worker"; name: string }) => d)
   .handler(async ({ context, data }) => {
     const { sql } = await guard(context.userId, data.kind === "worker" ? "workers" : "parties");
-    if (data.kind === "worker") {
-      await sql.query("alter table party_categories drop constraint if exists party_categories_kind_check");
-      await sql.query(
-        "alter table party_categories add constraint party_categories_kind_check check (kind in ('customer', 'vendor', 'worker', 'other'))",
-      );
-    }
     if (data.id) {
       await sql`
         update party_categories set name = ${data.name.trim()}
@@ -493,10 +487,6 @@ export const saveWarehouse = createServerFn({ method: "POST" })
   .handler(async ({ context, data }) => {
     const sql = await sqlOf();
     await requireWriteAny(sql, context.userId, ["opening", "purchase", "warehouses"]);
-    await sql.query("alter table warehouses add column if not exists shop_only boolean not null default false");
-    await sql.query(
-      "alter table app_settings add column if not exists production_enabled boolean not null default true",
-    );
     const prod = await sql<{ production_enabled: boolean | number | string | null }>`
       select production_enabled from app_settings where user_id = ${context.userId}
     `;
@@ -569,9 +559,6 @@ export const saveProductionEnabled = createServerFn({ method: "POST" })
     const sql = await sqlOf();
     await requireWriteAny(sql, context.userId, ["settings"]);
     await assertAccountantPin(sql, context.userId, data.code);
-    await sql.query(
-      "alter table app_settings add column if not exists production_enabled boolean not null default true",
-    );
     await sql`
       insert into app_settings (user_id, production_enabled)
       values (${context.userId}, ${data.enabled})

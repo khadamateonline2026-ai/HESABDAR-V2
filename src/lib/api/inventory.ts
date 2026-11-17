@@ -499,7 +499,6 @@ export const deliverWorkOrder = createServerFn({ method: "POST" })
         for update
       `;
       if (!order[0]) throw new Error("سفارش یافت نشد");
-      await sql.query("alter table work_deliveries add column if not exists wage_per_unit numeric");
       const wage = await snapshotWage(
         sql,
         context.userId,

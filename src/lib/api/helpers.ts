@@ -195,7 +195,6 @@ export function invoiceOf(prefix: string, id: number, stored: unknown): string {
 }
 
 export async function loadCatalogs(sql: Sql, userId: string): Promise<Catalogs> {
-  await sql.query("alter table warehouses add column if not exists shop_only boolean not null default false");
   const [
     currencies,
     units,

@@ -35,9 +35,6 @@ export const saveAppearance = createServerFn({ method: "POST" })
     const strength = Math.min(100, Math.max(0, Math.round(data.cardTintStrength) || 40));
     const presetsJson = JSON.stringify(Array.isArray(data.colorPresets) ? data.colorPresets.slice(0, 40) : []);
     const listColor = (data.listColor || "#3a2433").trim();
-    await sql.query("alter table app_settings add column if not exists color_presets text not null default '[]'");
-    await sql.query("alter table app_settings add column if not exists list_color text not null default '#3a2433'");
-    await sql.query("alter table app_settings add column if not exists font_family text not null default 'Vazirmatn'");
     await sql`
       insert into app_settings (
         user_id, theme, font_size, font_family, font_color, primary_color, bg_color,
@@ -80,7 +77,6 @@ export const saveRoleCodes = createServerFn({ method: "POST" })
     const hs = hashPin(supervisor);
     const ha = hashPin(accountant);
     const hsel = hashPin(seller);
-    await sql.query("alter table app_settings add column if not exists role_codes_hashed boolean not null default false");
     await sql`
       insert into app_settings (user_id, role_code_supervisor, role_code_accountant, role_code_seller, role_codes_hashed)
       values (${context.userId}, ${hs}, ${ha}, ${hsel}, ${true})
@@ -250,9 +246,6 @@ export const saveCloudBackup = createServerFn({ method: "POST" })
   .handler(async ({ context, data }) => {
     const sql = await sqlOf();
     await requireWrite(sql, context.userId, "settings");
-    await sql.query(
-      "create table if not exists cloud_backups (id serial primary key, user_id text not null, label text not null, kind text not null default 'manual', payload text not null, created_at timestamptz not null default now())",
-    );
     const dump = await dumpWorkspace(sql, context.userId);
     const kind = data.kind === "auto" ? "auto" : "manual";
     const label = (data.label || "").trim() || `کلود ${new Date().toISOString().slice(0, 16).replace("T", " ")}`;
@@ -269,9 +262,6 @@ export const listCloudBackups = createServerFn({ method: "GET" })
   .handler(async ({ context }) => {
     const sql = await sqlOf();
     await requireProfile(sql, context.userId);
-    await sql.query(
-      "create table if not exists cloud_backups (id serial primary key, user_id text not null, label text not null, kind text not null default 'manual', payload text not null, created_at timestamptz not null default now())",
-    );
     const rows = await sql<Record<string, unknown>>`
       select id, label, kind, created_at from cloud_backups
       where user_id = ${context.userId}

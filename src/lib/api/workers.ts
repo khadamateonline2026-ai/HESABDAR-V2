@@ -12,7 +12,6 @@ export const getWorkerLedger = createServerFn({ method: "GET" })
   .middleware([authMiddleware])
   .handler(async ({ context }): Promise<WorkerLedger[]> => {
     const sql = await sqlOf();
-    await sql.query("alter table work_deliveries add column if not exists wage_per_unit numeric");
     const [partyRows, orders, payments, wages, dues, deliveryRows] = await Promise.all([
       sql<Record<string, unknown>>`
         select p.*,

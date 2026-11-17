@@ -100,7 +100,6 @@ export async function loadLinkedPayment(sql: Sql, userId: string, id: number): P
 const EDIT_ON_INVOICE = "برای این تغییر، خود فاکتور را ویرایش کنید";
 
 async function saleRefund(sql: Sql, userId: string, saleInvoiceId: number): Promise<number> {
-  await sql.query("alter table sale_invoices add column if not exists refund_amount double precision not null default 0");
   const rows = await sql<{ refund_amount: unknown }>`
     select refund_amount from sale_invoices where id = ${saleInvoiceId} and user_id = ${userId}
   `;
@@ -150,7 +149,6 @@ export async function updateLinkedPayment(
   if (linked.kind === "payment" || (await saleRefund(tx, userId, saleId)) > 1e-9) {
     throw new Error(`این ردیف با بازپرداخت فاکتور فروش گره خورده است؛ ${EDIT_ON_INVOICE}`);
   }
-  await tx.query("alter table sale_invoices add column if not exists received_fx_rate double precision not null default 0");
   await tx`
     update party_payments set amount = ${edit.amount}, currency_id = ${edit.currencyId}, fx_rate = ${edit.fxRate},
       account_id = ${edit.accountId}, occurred_on = ${edit.occurredOn}, notes = ${edit.notes}
@@ -173,7 +171,6 @@ export async function deleteLinkedPayment(tx: Sql, userId: string, linked: Linke
   if (linked.kind === "payment" || (await saleRefund(tx, userId, saleId)) > 1e-9) {
     throw new Error(`این ردیف با بازپرداخت فاکتور فروش گره خورده است؛ ${EDIT_ON_INVOICE}`);
   }
-  await tx.query("alter table sale_invoices add column if not exists received_fx_rate double precision not null default 0");
   await tx`delete from party_payments where id = ${linked.id} and user_id = ${userId}`;
   await tx`
     update sale_invoices set received_amount = 0, received_fx_rate = 0

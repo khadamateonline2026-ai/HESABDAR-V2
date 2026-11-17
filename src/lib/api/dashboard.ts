@@ -24,9 +24,6 @@ export const getDashboard = createServerFn({ method: "GET" })
   .handler(async ({ context }): Promise<DashboardData> => {
     const sql = await sqlOf();
     await requireProfile(sql, context.userId);
-    await sql.query("alter table work_deliveries add column if not exists wage_per_unit numeric");
-    await sql.query("alter table party_payments add column if not exists applied_sale_id bigint");
-    await sql.query("alter table sale_invoices add column if not exists cash_included_base double precision not null default 0");
     const productionOn = await productionEnabled(sql, context.userId);
     const catalogs = await loadCatalogs(sql, context.userId);
     const rate = (id: number) => catalogs.currencies.find((c) => c.id === id)?.rateToBase ?? 1;

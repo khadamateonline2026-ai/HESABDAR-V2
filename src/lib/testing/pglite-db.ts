@@ -63,7 +63,7 @@ export async function applyMigrations(pg: PGlite, upTo?: string): Promise<void> 
   }
 }
 
-/** Columns the app still adds at request time (see STR-01); tests need them too. */
+/** Only needed for DBs built with `upTo` before 0033 (STR-01 moved these into migrations). */
 export async function ensureRuntimeColumns(sql: Sql): Promise<void> {
   for (const q of [
     "alter table warehouses add column if not exists shop_only boolean not null default false",
