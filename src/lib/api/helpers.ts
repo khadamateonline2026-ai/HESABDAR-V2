@@ -1341,15 +1341,17 @@ export const MAIN_WAREHOUSE = "گدام اصلی";
  * dashboard. On-hand quantity and value come from the stock cards (so sales,
  * production use and the frozen exchange rate are all included); each item is
  * split over warehouses in proportion to what came into each one (opening
- * stock and purchase receipts). Sales carry no warehouse yet, so they reduce
- * every warehouse of that item proportionally.
+ * stock and purchase receipts). A sale whose invoice names a warehouse is
+ * taken out of that warehouse first; older sales (no warehouse) and other
+ * outflows (production use, …) reduce every warehouse of that item
+ * proportionally. Totals always equal the stock card.
  */
 export async function loadWarehouseStock(
   sql: Sql,
   userId: string,
   inventory?: InventoryState,
 ): Promise<WarehouseStockRow[]> {
-  const [inv, warehouses, opening, purchases, receipts] = await Promise.all([
+  const [inv, warehouses, opening, purchases, receipts, sales] = await Promise.all([
     inventory ?? loadInventoryState(sql, userId),
     sql<{ name: string }>`select name from warehouses where user_id = ${userId} order by id`,
     sql<{ item_name: string; warehouse_name: string; quantity: unknown }>`
@@ -1361,6 +1363,12 @@ export async function loadWarehouseStock(
     `,
     sql<{ purchase_id: number; quantity: unknown; warehouse_name: string }>`
       select purchase_id, quantity, warehouse_name from purchase_receipts where user_id = ${userId}
+    `,
+    sql<{ item_id: number | null; item_name: string; quantity: unknown; warehouse_name: string | null }>`
+      select s.item_id, s.item_name, s.quantity, i.warehouse_name
+      from sales s
+      join sale_invoices i on i.id = s.invoice_id and i.user_id = s.user_id
+      where s.user_id = ${userId} and i.warehouse_name is not null and i.warehouse_name <> ''
     `,
   ]);
   const names = warehouses.map((w) => text(w.name));
@@ -1390,6 +1398,11 @@ export async function loadWarehouseStock(
     }
     // Receipts that do not add up (older data) go to the line's warehouse.
     if (left > 1e-9) add(name, whOf(p.warehouse_name), left);
+  }
+  // فروش با گدام مشخص: از همان گدام کم می‌شود.
+  for (const sl of sales) {
+    const name = (sl.item_id != null && nameById.get(num(sl.item_id))) || text(sl.item_name);
+    add(name, whOf(sl.warehouse_name), -num(sl.quantity));
   }
   const out = new Map<string, WarehouseStockRow["items"]>();
   const put = (wh: string, row: WarehouseStockRow["items"][number]) => {

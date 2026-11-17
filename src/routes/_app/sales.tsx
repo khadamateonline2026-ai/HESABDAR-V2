@@ -235,6 +235,15 @@ function SaleForm({
     initial?.refundAccountId ?? afnAccounts[0]?.id ?? null,
   );
   const [includeCash, setIncludeCash] = useState((initial?.cashIncludedBase ?? 0) > 0);
+  const prodOn = data?.settings.productionEnabled !== false;
+  // گدام فروش — فقط در فرم دیده می‌شود (export-exclude/no-print)، نه در عکس یا چاپ.
+  const saleWarehouses = (data?.catalogs.warehouses ?? []).filter((w) => {
+    if (prodOn) return !w.shopOnly && w.name !== "گدام مواد خام" && w.name !== "مواد نزد کارگران";
+    return w.name !== "گدام کالای تولید شده" && w.name !== "گدام مواد خام" && w.name !== "مواد نزد کارگران";
+  });
+  const [saleWh, setSaleWh] = useState<string | null>(
+    initial ? initial.warehouseName : (saleWarehouses[0]?.name ?? null),
+  );
   const [notes, setNotes] = useState(initial?.notes ?? "");
   const [lines, setLines] = useState<DraftLine[]>(
     initial?.lines.length
@@ -363,6 +372,7 @@ function SaleForm({
           refundAmount: over > 1e-9 ? refundN : 0,
           refundAccountId: over > 1e-9 ? refundAccountId : null,
           cashPaymentIds: includeCash ? pickedCash : [],
+          warehouseName: saleWh,
           lines: lines.map((l) => ({
             itemId: l.itemId,
             itemName: l.itemName,
@@ -461,6 +471,23 @@ function SaleForm({
                     )}
                   </Field>
                 </div>
+              </div>
+              <div className="sale-warehouse no-print export-exclude mt-2">
+                <Field label="گدام">
+                  {view ? (
+                    <p className="flex h-11 items-center text-sm whitespace-nowrap">{saleWh || "نامشخص"}</p>
+                  ) : (
+                    <EntitySelect
+                      value={saleWarehouses.find((w) => w.name === saleWh)?.id ?? null}
+                      placeholder="نامشخص"
+                      options={saleWarehouses.map((w) => ({ id: w.id, label: w.name }))}
+                      onChange={(id) => {
+                        setDirty(true);
+                        setSaleWh(saleWarehouses.find((w) => w.id === Number(id))?.name ?? null);
+                      }}
+                    />
+                  )}
+                </Field>
               </div>
               <div className="no-print export-exclude mt-2">
                 <FxBar

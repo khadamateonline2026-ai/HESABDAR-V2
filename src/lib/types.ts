@@ -568,6 +568,8 @@ export type SaleInvoice = {
   refundAmount: number;
   refundAccountId: number | null;
   cashIncludedBase: number;
+  /** گدام فروش (null = فاکتورهای قدیمی / نامشخص). در عکس و چاپ نمایش داده نمی‌شود. */
+  warehouseName: string | null;
   lines: InvoiceLine[];
   total: number;
   totalBase: number;

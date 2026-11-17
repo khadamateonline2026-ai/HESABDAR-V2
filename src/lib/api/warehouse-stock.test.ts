@@ -80,3 +80,34 @@ test("ACC-10: older purchases without receipt rows fall back to the line's wareh
   assert.equal(cellOf(rows, "گدام الف", "دکمه")?.qty, 2);
   await db.close();
 });
+
+async function sell(db: TestDb, cur: number, itemId: number, name: string, qty: number, wh: string | null) {
+  const inv = await db.sql<{ id: number }>`
+    insert into sale_invoices (user_id, invoice_no, occurred_on, currency_id, warehouse_name)
+    values (${U}, ${`S-${Math.random()}`}, ${"2026-01-02"}, ${cur}, ${wh}) returning id
+  `;
+  await db.sql`
+    insert into sales (user_id, item_id, item_name, quantity, unit_price, currency_id, occurred_on, invoice_id)
+    values (${U}, ${itemId}, ${name}, ${qty}, ${10}, ${cur}, ${"2026-01-02"}, ${inv[0].id})
+  `;
+}
+
+test("ACC-10: a sale with a chosen warehouse comes out of that warehouse; old sales stay proportional", async () => {
+  const { db, ids } = await setup();
+  const id = await item(db, "کیف", "raw");
+  await buy(db, ids.afnId, id, "کیف", 5, [["گدام الف", 10], ["گدام ب", 10]]);
+  await sell(db, ids.afnId, id, "کیف", 6, "گدام الف");
+  let rows = await loadWarehouseStock(db.sql, U);
+  assert.equal(cellOf(rows, "گدام الف", "کیف")?.qty, 4);
+  assert.equal(cellOf(rows, "گدام ب", "کیف")?.qty, 10);
+  // old-style sale (no warehouse) reduces both in proportion; total equals the stock card
+  await sell(db, ids.afnId, id, "کیف", 7, null);
+  rows = await loadWarehouseStock(db.sql, U);
+  const a = cellOf(rows, "گدام الف", "کیف")?.qty ?? 0;
+  const b = cellOf(rows, "گدام ب", "کیف")?.qty ?? 0;
+  assert.ok(Math.abs(a + b - 7) < 1e-9);
+  assert.ok(Math.abs(a / b - 4 / 10) < 1e-9);
+  const inv = await loadInventoryState(db.sql, U);
+  assert.ok(Math.abs((inv.raw.find((c) => c.name === "کیف")?.qty ?? 0) - 7) < 1e-9);
+  await db.close();
+});

@@ -12,6 +12,7 @@ import {
   loadInventoryState,
   loadWarehouseStock,
   lockStock,
+  MAIN_WAREHOUSE,
   nextDocNo,
   requireProfile,
   sqlOf,
@@ -622,6 +623,7 @@ function toSaleInvoice(h: Record<string, unknown>, lineRows: Record<string, unkn
     refundAmount: refund,
     refundAccountId: h.refund_account_id == null ? null : num(h.refund_account_id),
     cashIncludedBase: cash,
+    warehouseName: text(h.warehouse_name).trim() || null,
     lines,
     total: goods,
     totalBase: goodsBase + cash,
@@ -649,6 +651,8 @@ export const saveSaleInvoice = createServerFn({ method: "POST" })
       refundAmount?: number;
       refundAccountId?: number | null;
       cashPaymentIds?: number[];
+      /** گدام فروش؛ undefined = بدون تغییر (ویرایش) / نامشخص (جدید). */
+      warehouseName?: string | null;
       lines: LineIn[];
     }) => validInput(d),
   )
@@ -733,6 +737,14 @@ export const saveSaleInvoice = createServerFn({ method: "POST" })
       const overPreview = data.receivedAmount * recvRate - (goodsBasePreview + cashPreview);
       const refundPreview = overPreview > 1e-9 ? Math.max(0, data.refundAmount ?? 0) : 0;
       if (refundPreview - Math.max(0, overPreview) > 1e-9) throw new Error("پرداخت باقی‌مانده از مابه‌التفاوت بیشتر است");
+      const saleWh =
+        data.warehouseName === undefined ? undefined : (data.warehouseName ?? "").trim() || null;
+      if (saleWh && saleWh !== MAIN_WAREHOUSE) {
+        const whRow = await sql<{ id: number }>`
+          select id from warehouses where user_id = ${context.userId} and name = ${saleWh}
+        `;
+        if (!whRow[0]) throw new Error("گدام انتخاب‌شده یافت نشد");
+      }
       let id = data.id;
       let invoiceNo = "";
       if (id) {
@@ -750,17 +762,20 @@ export const saveSaleInvoice = createServerFn({ method: "POST" })
             kind = ${kind}, closed = ${closed}
           where id = ${id} and user_id = ${context.userId}
         `;
+        if (saleWh !== undefined) {
+          await sql`update sale_invoices set warehouse_name = ${saleWh} where id = ${id} and user_id = ${context.userId}`;
+        }
         await sql`delete from sales where invoice_id = ${id} and user_id = ${context.userId}`;
       } else {
         invoiceNo = await allocInvoiceNo(sql, context.userId, "sale_invoices", "S");
         const rows = await sql<{ id: number }>`
           insert into sale_invoices (
             user_id, customer_id, invoice_no, occurred_on, currency_id, fx_enabled, fx_rate,
-            received_amount, received_fx_rate, account_id, notes, kind, closed
+            received_amount, received_fx_rate, account_id, notes, kind, closed, warehouse_name
           ) values (
             ${context.userId}, ${data.customerId}, ${invoiceNo}, ${data.occurredOn}, ${data.currencyId},
             ${data.fxEnabled}, ${rate}, ${data.receivedAmount}, ${recvRate}, ${data.accountId}, ${data.notes}, ${kind},
-            ${closed}
+            ${closed}, ${saleWh ?? null}
           ) returning id
         `;
         id = rows[0].id;
