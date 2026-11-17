@@ -1,4 +1,4 @@
-import { getSql, withTransaction, type Sql } from "@/lib/db";
+import { getSql, withReadSnapshot, withTransaction, type Sql } from "@/lib/db";
 import { convertAmount, num, text } from "@/lib/format";
 import { canManageRoleCodes, canWrite, writeError, type Area } from "@/lib/permissions";
 import { isWarehouseBackupPayload } from "@/lib/warehouse-backup";
@@ -668,6 +668,11 @@ export async function dumpWorkspace(sql: Sql, userId: string) {
     manifest: buildManifest(tables),
     tables,
   };
+}
+
+/** STR-06: the whole workspace as of one moment (single read-only snapshot). */
+export async function dumpWorkspaceConsistent(userId: string) {
+  return withReadSnapshot((tx) => dumpWorkspace(tx, userId));
 }
 
 /**

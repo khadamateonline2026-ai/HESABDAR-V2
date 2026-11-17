@@ -8,12 +8,16 @@ import {
   extractPhotos,
   type BackupSnapshot,
 } from "@/lib/backup-snapshot";
+import { withReadSnapshot } from "@/lib/db";
+import { driveOutcome, readSnapshotTables } from "@/lib/backup-read";
 import { requireWrite, sqlOf } from "./helpers";
 import { validInput } from "./validate";
 
 export type DriveUploadReport = {
   attempted: boolean;
   ok: boolean;
+  /** STR-06: some files uploaded but not all (or a table was missing). */
+  partial?: boolean;
   loginRequired?: boolean;
   loginUrl?: string;
   message: string;
@@ -27,20 +31,13 @@ export type DriveUploadReport = {
 export type CloudBackupKind = "full" | "daily" | "monthly" | "local";
 
 async function readSnapshot(userId: string): Promise<BackupSnapshot> {
-  const sql = await sqlOf();
-  const tables: Record<string, Record<string, unknown>[]> = {};
-  const missingTables: string[] = [];
+  // STR-06: every table from one consistent read-only snapshot; tables that
+  // do not exist are reported (missingTables) instead of failing silently.
+  const { tables, missingTables } = await withReadSnapshot((sql) =>
+    readSnapshotTables(sql, userId, SNAPSHOT_TABLES),
+  );
   const rowCounts: Record<string, number> = {};
-  for (const name of SNAPSHOT_TABLES) {
-    try {
-      const rows = await sql.query(`select * from ${name} where user_id = $1`, [userId]);
-      tables[name] = rows;
-      rowCounts[name] = rows.length;
-    } catch {
-      missingTables.push(name);
-      rowCounts[name] = 0;
-    }
-  }
+  for (const name of SNAPSHOT_TABLES) rowCounts[name] = tables[name]?.length ?? 0;
   const photos = extractPhotos(tables);
   const exportedAt = new Date().toISOString();
   const timezone = "Asia/Kabul";
@@ -366,13 +363,13 @@ export const runCloudBackup = createServerFn({ method: "POST" })
       }
     }
 
-    const ok = uploaded.length > 0;
+    // STR-06: any failed file or missing table makes the backup partial, not ok.
+    const outcome = driveOutcome(uploaded, failed, snapshot.missingTables);
     return {
       attempted: true,
-      ok,
-      message: ok
-        ? `آپلود انجام شد (${uploaded.length} فایل)`
-        : failed[0] || "فایل‌ها آپلود نشدند — ابزار آپلود فایل در Connector موجود نبود",
+      ok: outcome.ok,
+      partial: outcome.partial,
+      message: outcome.message,
       rootFolderId: rootId,
       rootFolderUrl: folderUrl(rootId),
       uploaded,

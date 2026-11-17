@@ -247,6 +247,47 @@ export async function withTransaction<T>(fn: (sql: Sql) => Promise<T>): Promise<
 }
 
 /**
+ * STR-06: run read-only work against one consistent snapshot (REPEATABLE READ,
+ * READ ONLY). Used for backups so every table is copied as of the same moment.
+ */
+export async function withReadSnapshot<T>(fn: (sql: Sql) => Promise<T>): Promise<T> {
+  const { readInSnapshot } = await import("./db-snapshot");
+  if (dbSource !== "neon") {
+    const pg = await getPglite();
+    return pg.transaction(async (tx) => {
+      const sql = toSql(async <R>(text: string, params: unknown[]) => {
+        const result = await tx.query<R>(text, params);
+        return result.rows;
+      });
+      return readInSnapshot(sql, fn);
+    });
+  }
+  await getSql();
+  const pool = globalRef.__pgPool__;
+  if (!pool) throw new Error("پایگاه داده آماده نیست");
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    const sql = toSql(async <R>(text: string, params: unknown[]) => {
+      const res = await client.query(text, params);
+      return res.rows as R[];
+    });
+    const out = await readInSnapshot(sql, fn);
+    await client.query("COMMIT");
+    return out;
+  } catch (err) {
+    try {
+      await client.query("ROLLBACK");
+    } catch {
+      /* the connection is already aborted */
+    }
+    throw err;
+  } finally {
+    client.release();
+  }
+}
+
+/**
  * The shared PGLite instance (preview only), with `migrations/*.sql` applied.
  * Lets Better Auth persist to the SAME embedded DB as app data in preview (via a
  * Kysely dialect). Throws when `DATABASE_URL` is set (that path uses Neon).

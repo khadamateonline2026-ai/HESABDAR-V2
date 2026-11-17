@@ -6,7 +6,7 @@ import { withTransaction, type Sql } from "@/lib/db";
 import { authMiddleware } from "@/lib/auth/middleware";
 import { num, text } from "@/lib/format";
 import { type AppSettings, type ColorPreset, type Role } from "@/lib/types";
-import { dumpWorkspace, muteActivityLog, requireManageRoleCodes, requireProfile, requireWrite, restoreWorkspace, rethrow, seedDefaults, sqlOf, unmuteActivityLog, WORKSPACE_TABLES, assertAccountantPin, assertRolePin } from "./helpers";
+import { dumpWorkspace, dumpWorkspaceConsistent, muteActivityLog, requireManageRoleCodes, requireProfile, requireWrite, restoreWorkspace, rethrow, seedDefaults, sqlOf, unmuteActivityLog, WORKSPACE_TABLES, assertAccountantPin, assertRolePin } from "./helpers";
 import { validInput } from "./validate";
 
 export const saveAppearance = createServerFn({ method: "POST" })
@@ -166,7 +166,7 @@ export const exportWorkspace = createServerFn({ method: "POST" })
   .handler(async ({ context }) => {
     const sql = await sqlOf();
     await requireWrite(sql, context.userId, "settings");
-    const dump = await dumpWorkspace(sql, context.userId);
+    const dump = await dumpWorkspaceConsistent(context.userId);
     return { json: JSON.stringify(dump) };
   });
 
@@ -187,7 +187,7 @@ export const saveOnlineBackup = createServerFn({ method: "POST" })
   .handler(async ({ context, data }) => {
     const sql = await sqlOf();
     await requireWrite(sql, context.userId, "settings");
-    const dump = await dumpWorkspace(sql, context.userId);
+    const dump = await dumpWorkspaceConsistent(context.userId);
     const label = (data.label || "").trim() || `پشتیبان ${new Date().toISOString().slice(0, 16).replace("T", " ")}`;
     const payload = JSON.stringify(dump);
     const rows = await sql<{ id: number }>`
@@ -247,7 +247,7 @@ export const saveCloudBackup = createServerFn({ method: "POST" })
   .handler(async ({ context, data }) => {
     const sql = await sqlOf();
     await requireWrite(sql, context.userId, "settings");
-    const dump = await dumpWorkspace(sql, context.userId);
+    const dump = await dumpWorkspaceConsistent(context.userId);
     const kind = data.kind === "auto" ? "auto" : "manual";
     const label = (data.label || "").trim() || `کلود ${new Date().toISOString().slice(0, 16).replace("T", " ")}`;
     const rows = await sql<{ id: number }>`
