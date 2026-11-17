@@ -219,9 +219,9 @@ export async function loadCatalogs(sql: Sql, userId: string): Promise<Catalogs> 
     sql<Record<string, unknown>>`
       select i.*, t.name as type_name, c.name as category_name, u.name as unit_name
       from items i
-      left join item_types t on t.id = i.type_id
-      left join item_categories c on c.id = i.category_id
-      left join units u on u.id = i.unit_id
+      left join item_types t on t.id = i.type_id and t.user_id = i.user_id
+      left join item_categories c on c.id = i.category_id and c.user_id = i.user_id
+      left join units u on u.id = i.unit_id and u.user_id = i.user_id
       where i.user_id = ${userId}
       order by i.id
     `,
@@ -229,7 +229,7 @@ export async function loadCatalogs(sql: Sql, userId: string): Promise<Catalogs> 
     sql<Record<string, unknown>>`
       select a.*, c.name as currency_name, c.symbol as currency_symbol, c.rate_to_base
       from accounts a
-      join currencies c on c.id = a.currency_id
+      join currencies c on c.id = a.currency_id and c.user_id = a.user_id
       where a.user_id = ${userId}
       order by a.id
     `,
@@ -240,10 +240,10 @@ export async function loadCatalogs(sql: Sql, userId: string): Promise<Catalogs> 
         cur.name as currency_name,
         st.name as stage_name
       from parties p
-      left join party_categories pc on pc.id = p.category_id
-      left join job_types jt on jt.id = p.job_type_id
-      left join currencies cur on cur.id = p.currency_id
-      left join production_stages st on st.id = p.stage_id
+      left join party_categories pc on pc.id = p.category_id and pc.user_id = p.user_id
+      left join job_types jt on jt.id = p.job_type_id and jt.user_id = p.user_id
+      left join currencies cur on cur.id = p.currency_id and cur.user_id = p.user_id
+      left join production_stages st on st.id = p.stage_id and st.user_id = p.user_id
       where p.user_id = ${userId}
       order by p.id
     `,
@@ -343,9 +343,9 @@ export async function withBalances(
           1
         ) as from_rate
       from party_payments pp
-      left join purchase_invoices pi on pi.id = pp.purchase_invoice_id
-      left join sale_invoices si on si.id = pp.sale_invoice_id
-      left join currencies c on c.id = pp.currency_id
+      left join purchase_invoices pi on pi.id = pp.purchase_invoice_id and pi.user_id = pp.user_id
+      left join sale_invoices si on si.id = pp.sale_invoice_id and si.user_id = pp.user_id
+      left join currencies c on c.id = pp.currency_id and c.user_id = pp.user_id
       where pp.user_id = ${userId}
     `,
     sql<{ account_id: number | null; amount: unknown; account_rate: unknown }>`
@@ -1008,8 +1008,8 @@ export async function loadInventoryState(
       sql<Record<string, unknown>>`
         select i.*, c.name as category_name, u.name as unit_name
         from items i
-        left join item_categories c on c.id = i.category_id
-        left join units u on u.id = i.unit_id
+        left join item_categories c on c.id = i.category_id and c.user_id = i.user_id
+        left join units u on u.id = i.unit_id and u.user_id = i.user_id
         where i.user_id = ${userId}
         order by i.id
       `,
@@ -1017,7 +1017,7 @@ export async function loadInventoryState(
       sql<Record<string, unknown>>`
         select p.*, i.fx_enabled as inv_fx, i.fx_rate as inv_rate
         from purchases p
-        left join purchase_invoices i on i.id = p.invoice_id
+        left join purchase_invoices i on i.id = p.invoice_id and i.user_id = p.user_id
         where p.user_id = ${userId}
       `,
       sql<Record<string, unknown>>`select * from sales where user_id = ${userId}`,
@@ -1027,8 +1027,8 @@ export async function loadInventoryState(
       sql<Record<string, unknown>>`
         select b.*, r.name as raw_name, r.unit_id as raw_unit_id, u.name as unit_name
         from bom_lines b
-        join items r on r.id = b.raw_item_id
-        left join units u on u.id = r.unit_id
+        join items r on r.id = b.raw_item_id and r.user_id = b.user_id
+        left join units u on u.id = r.unit_id and u.user_id = r.user_id
         where b.user_id = ${userId}
         order by b.id
       `,

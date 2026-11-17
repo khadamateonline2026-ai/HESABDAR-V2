@@ -5,6 +5,7 @@ import type { ExpenseCategory, RecurringCadence, RecurringDue, RecurringDueAncho
 import { parseCadence, parseDueAnchor } from "@/lib/types";
 import { withTransaction, type Sql } from "@/lib/db";
 import { docStatusOf, guard, invoiceOf, itemKindOf, loadCatalogs, sqlOf, assertAccountantPin } from "./helpers";
+import { assertOwned } from "./ownership";
 
 async function settleExpenseAccount(
   sql: Sql,
@@ -58,11 +59,11 @@ export const listPurchases = createServerFn({ method: "GET" })
       select p.*, v.name as vendor_name, u.name as unit_name, c.symbol as currency_symbol,
         a.name as account_name, i.kind as item_kind
       from purchases p
-      left join parties v on v.id = p.vendor_id
-      left join units u on u.id = p.unit_id
-      join currencies c on c.id = p.currency_id
-      left join accounts a on a.id = p.account_id
-      left join items i on i.id = p.item_id
+      left join parties v on v.id = p.vendor_id and v.user_id = p.user_id
+      left join units u on u.id = p.unit_id and u.user_id = p.user_id
+      join currencies c on c.id = p.currency_id and c.user_id = p.user_id
+      left join accounts a on a.id = p.account_id and a.user_id = p.user_id
+      left join items i on i.id = p.item_id and i.user_id = p.user_id
       where p.user_id = ${context.userId}
       order by p.occurred_on desc, p.id desc
     `;
@@ -113,6 +114,13 @@ export const savePurchase = createServerFn({ method: "POST" })
   )
   .handler(async ({ context, data }) => {
     const { sql } = await guard(context.userId, "purchase");
+    await assertOwned(sql, context.userId, [
+      ["parties", data.vendorId],
+      ["items", data.itemId],
+      ["units", data.unitId],
+      ["currencies", data.currencyId],
+      ["accounts", data.accountId],
+    ]);
     if (data.id) {
       await sql`
         update purchases set
@@ -157,11 +165,11 @@ export const listSales = createServerFn({ method: "GET" })
       select s.*, c.name as customer_name, u.name as unit_name, cur.symbol as currency_symbol,
         a.name as account_name, i.kind as item_kind
       from sales s
-      left join parties c on c.id = s.customer_id
-      left join units u on u.id = s.unit_id
-      join currencies cur on cur.id = s.currency_id
-      left join accounts a on a.id = s.account_id
-      left join items i on i.id = s.item_id
+      left join parties c on c.id = s.customer_id and c.user_id = s.user_id
+      left join units u on u.id = s.unit_id and u.user_id = s.user_id
+      join currencies cur on cur.id = s.currency_id and cur.user_id = s.user_id
+      left join accounts a on a.id = s.account_id and a.user_id = s.user_id
+      left join items i on i.id = s.item_id and i.user_id = s.user_id
       where s.user_id = ${context.userId}
       order by s.occurred_on desc, s.id desc
     `;
@@ -209,6 +217,13 @@ export const saveSale = createServerFn({ method: "POST" })
   )
   .handler(async ({ context, data }) => {
     const { sql } = await guard(context.userId, "sales");
+    await assertOwned(sql, context.userId, [
+      ["parties", data.customerId],
+      ["items", data.itemId],
+      ["units", data.unitId],
+      ["currencies", data.currencyId],
+      ["accounts", data.accountId],
+    ]);
     if (data.id) {
       await sql`
         update sales set
@@ -251,10 +266,10 @@ export const listExpenses = createServerFn({ method: "GET" })
       select e.*, c.symbol as currency_symbol, a.name as account_name,
         cat.name as category_name, p.name as party_name
       from expenses e
-      join currencies c on c.id = e.currency_id
-      left join accounts a on a.id = e.account_id
-      left join expense_categories cat on cat.id = e.category_id
-      left join parties p on p.id = e.party_id
+      join currencies c on c.id = e.currency_id and c.user_id = e.user_id
+      left join accounts a on a.id = e.account_id and a.user_id = e.user_id
+      left join expense_categories cat on cat.id = e.category_id and cat.user_id = e.user_id
+      left join parties p on p.id = e.party_id and p.user_id = e.user_id
       where e.user_id = ${context.userId}
       order by e.occurred_on desc, e.id desc
     `;
@@ -293,6 +308,13 @@ export const saveExpense = createServerFn({ method: "POST" })
   )
   .handler(async ({ context, data }) => {
     const { sql } = await guard(context.userId, "expenses");
+    await assertOwned(sql, context.userId, [
+      ["accounts", data.accountId],
+      ["currencies", data.currencyId],
+      ["expense_categories", data.categoryId],
+      ["parties", data.partyId],
+      ["expenses", data.id],
+    ]);
     const categoryId = data.categoryId ?? null;
     const partyId = data.partyId ?? null;
     const paid = await settleExpenseAccount(sql, context.userId, {
@@ -425,8 +447,8 @@ export async function loadRecurringDues(sql: Sql, userId: string): Promise<Recur
     sql<Record<string, unknown>>`
       select r.*, c.symbol as currency_symbol, p.name as party_name
       from recurring_expenses r
-      join currencies c on c.id = r.currency_id
-      left join parties p on p.id = r.party_id
+      join currencies c on c.id = r.currency_id and c.user_id = r.user_id
+      left join parties p on p.id = r.party_id and p.user_id = r.user_id
       where r.user_id = ${userId}
     `,
     sql<Record<string, unknown>>`
@@ -514,10 +536,10 @@ export const listRecurringExpenses = createServerFn({ method: "GET" })
     const rows = await sql<Record<string, unknown>>`
       select r.*, c.symbol as currency_symbol, cat.name as category_name, a.name as account_name, p.name as party_name
       from recurring_expenses r
-      join currencies c on c.id = r.currency_id
-      left join expense_categories cat on cat.id = r.category_id
-      left join accounts a on a.id = r.account_id
-      left join parties p on p.id = r.party_id
+      join currencies c on c.id = r.currency_id and c.user_id = r.user_id
+      left join expense_categories cat on cat.id = r.category_id and cat.user_id = r.user_id
+      left join accounts a on a.id = r.account_id and a.user_id = r.user_id
+      left join parties p on p.id = r.party_id and p.user_id = r.user_id
       where r.user_id = ${context.userId} and r.worker_id is null
       order by r.id desc
     `;
@@ -560,6 +582,12 @@ export const saveRecurringExpense = createServerFn({ method: "POST" })
   )
   .handler(async ({ context, data }) => {
     const { sql } = await guard(context.userId, "expenses");
+    await assertOwned(sql, context.userId, [
+      ["accounts", data.accountId],
+      ["currencies", data.currencyId],
+      ["expense_categories", data.categoryId],
+      ["parties", data.partyId],
+    ]);
     const title = data.title.trim();
     if (!title) throw new Error("تشریح لازم است");
     if (data.amount <= 0) throw new Error("مبلغ باید بزرگ‌تر از صفر باشد");
@@ -613,6 +641,7 @@ export const setRecurringPeriodStatus = createServerFn({ method: "POST" })
     await guard(context.userId, "expenses");
     // STR-03: the expense row and the period status change together; the recurring row is locked so a double click cannot create two expenses for one period.
     return withTransaction(async (sql) => {
+      await assertOwned(sql, context.userId, [["recurring_expenses", data.recurringId]]);
       const rec = await sql<Record<string, unknown>>`
         select * from recurring_expenses where id = ${data.recurringId} and user_id = ${context.userId}
         for update

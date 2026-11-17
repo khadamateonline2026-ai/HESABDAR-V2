@@ -3,12 +3,14 @@ import { authMiddleware } from "@/lib/auth/middleware";
 import { convertAmount, num, text } from "@/lib/format";
 import { withTransaction } from "@/lib/db";
 import { sqlOf, guard, assertCashAvailable, loadCatalogs, loadInventoryState, fxToBase } from "./helpers";
+import { assertOwned } from "./ownership";
 
 export const saveAccount = createServerFn({ method: "POST" })
   .middleware([authMiddleware])
   .validator((d: { id?: number; name: string; currencyId: number; openingBalance: number; kind?: "cash" | "counterparty" }) => d)
   .handler(async ({ context, data }) => {
     const { sql } = await guard(context.userId, "accounts");
+    await assertOwned(sql, context.userId, [["currencies", data.currencyId]]);
     const kind = data.kind === "counterparty" ? "counterparty" : "cash";
     if (data.id) {
       await sql`
@@ -41,8 +43,8 @@ export const listTransfers = createServerFn({ method: "GET" })
     const rows = await sql<Record<string, unknown>>`
       select t.*, a1.name as from_name, a2.name as to_name
       from transfers t
-      join accounts a1 on a1.id = t.from_account_id
-      join accounts a2 on a2.id = t.to_account_id
+      join accounts a1 on a1.id = t.from_account_id and a1.user_id = t.user_id
+      join accounts a2 on a2.id = t.to_account_id and a2.user_id = t.user_id
       where t.user_id = ${context.userId}
       order by t.occurred_on desc, t.id desc
     `;
@@ -75,6 +77,11 @@ export const saveTransfer = createServerFn({ method: "POST" })
     if (data.fromAccountId === data.toAccountId) throw new Error("حساب مبدأ و مقصد باید متفاوت باشند");
     // STR-03: the balance check and the write run in one transaction with the source account locked, so two transfers cannot both spend the same money.
     return withTransaction(async (sql) => {
+      await assertOwned(sql, context.userId, [
+        ["accounts", data.fromAccountId],
+        ["accounts", data.toAccountId],
+        ["transfers", data.id],
+      ]);
       await sql`select id from accounts where id = ${data.fromAccountId} and user_id = ${context.userId} for update`;
       const catalogs = await loadCatalogs(sql, context.userId);
       const fromAcc = catalogs.accounts.find((a) => a.id === data.fromAccountId);
@@ -126,8 +133,8 @@ export const listCapital = createServerFn({ method: "GET" })
     const rows = await sql<Record<string, unknown>>`
       select c.*, a.name as account_name, cur.symbol as currency_symbol
       from capital_moves c
-      join accounts a on a.id = c.account_id
-      join currencies cur on cur.id = c.currency_id
+      join accounts a on a.id = c.account_id and a.user_id = c.user_id
+      join currencies cur on cur.id = c.currency_id and cur.user_id = c.user_id
       where c.user_id = ${context.userId}
       order by c.occurred_on desc, c.id desc
     `;
@@ -159,6 +166,7 @@ export const saveCapital = createServerFn({ method: "POST" })
   )
   .handler(async ({ context, data }) => {
     const { sql } = await guard(context.userId, "capital");
+    await assertOwned(sql, context.userId, [["accounts", data.accountId], ["currencies", data.currencyId]]);
     if (data.kind === "withdraw") {
       const catalogs = await loadCatalogs(sql, context.userId);
       const amountRate = catalogs.currencies.find((c) => c.id === data.currencyId)?.rateToBase || 1;
@@ -215,8 +223,8 @@ export const listOpeningCash = createServerFn({ method: "GET" })
     const rows = await sql<Record<string, unknown>>`
       select o.*, a.name as account_name, c.symbol as currency_symbol
       from opening_cash o
-      join accounts a on a.id = o.account_id
-      join currencies c on c.id = o.currency_id
+      join accounts a on a.id = o.account_id and a.user_id = o.user_id
+      join currencies c on c.id = o.currency_id and c.user_id = o.user_id
       where o.user_id = ${context.userId}
       order by o.occurred_on desc, o.id desc
     `;
@@ -246,6 +254,7 @@ export const saveOpeningCash = createServerFn({ method: "POST" })
   )
   .handler(async ({ context, data }) => {
     const { sql } = await guard(context.userId, "opening");
+    await assertOwned(sql, context.userId, [["accounts", data.accountId], ["currencies", data.currencyId]]);
     const mag = Math.abs(data.amount);
     if (mag <= 1e-9) throw new Error("مبلغ باید بزرگ‌تر از صفر باشد");
     if (data.amount < 0) {

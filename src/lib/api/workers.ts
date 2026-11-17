@@ -6,6 +6,7 @@ import type { Party, WorkerDeliveryLine, WorkerLedger, WorkerModelAgg, WorkerPay
 import { planDeliveryQtyChange, type PlanDelivery, type PlanOrder } from "@/lib/worker-delivery-plan";
 import { assertCashAvailable, guard, loadInventoryState, mapParty, sqlOf, wageForProduct, assertAccountantPin } from "./helpers";
 import { loadRecurringDues } from "./ops";
+import { assertOwned } from "./ownership";
 
 export const getWorkerLedger = createServerFn({ method: "GET" })
   .middleware([authMiddleware])
@@ -20,10 +21,10 @@ export const getWorkerLedger = createServerFn({ method: "GET" })
           cur.name as currency_name,
           st.name as stage_name
         from parties p
-        left join party_categories pc on pc.id = p.category_id
-        left join job_types jt on jt.id = p.job_type_id
-        left join currencies cur on cur.id = p.currency_id
-        left join production_stages st on st.id = p.stage_id
+        left join party_categories pc on pc.id = p.category_id and pc.user_id = p.user_id
+        left join job_types jt on jt.id = p.job_type_id and jt.user_id = p.user_id
+        left join currencies cur on cur.id = p.currency_id and cur.user_id = p.user_id
+        left join production_stages st on st.id = p.stage_id and st.user_id = p.user_id
         where p.user_id = ${context.userId} and p.kind = ${"worker"}
         order by p.id
       `,
@@ -33,7 +34,7 @@ export const getWorkerLedger = createServerFn({ method: "GET" })
       sql<Record<string, unknown>>`
         select wp.*, a.name as account_name
         from worker_payments wp
-        left join accounts a on a.id = wp.account_id
+        left join accounts a on a.id = wp.account_id and a.user_id = wp.user_id
         where wp.user_id = ${context.userId} order by wp.occurred_on desc, wp.id desc
       `,
       sql<Record<string, unknown>>`
@@ -47,7 +48,7 @@ export const getWorkerLedger = createServerFn({ method: "GET" })
           tw.name as to_worker_name
         from work_deliveries d
         join work_orders o on o.id = d.work_order_id and o.user_id = d.user_id
-        left join parties tw on tw.id = d.to_worker_id
+        left join parties tw on tw.id = d.to_worker_id and tw.user_id = d.user_id
         where d.user_id = ${context.userId}
         order by d.occurred_on desc, d.id desc
       `,
@@ -190,8 +191,8 @@ export const listWeekDeliveries = createServerFn({ method: "GET" })
         st.name as stage_name
       from work_deliveries d
       join work_orders o on o.id = d.work_order_id and o.user_id = d.user_id
-      left join parties w on w.id = o.worker_id
-      left join production_stages st on st.id = o.stage_id
+      left join parties w on w.id = o.worker_id and w.user_id = o.user_id
+      left join production_stages st on st.id = o.stage_id and st.user_id = o.user_id
       where d.user_id = ${context.userId}
       order by d.occurred_on desc, d.id desc
     `;
@@ -219,6 +220,7 @@ export const saveWorkerPayment = createServerFn({ method: "POST" })
   )
   .handler(async ({ context, data }) => {
     const { sql } = await guard(context.userId, "workers");
+    await assertOwned(sql, context.userId, [["accounts", data.accountId]]);
     if (data.amount <= 0) throw new Error("مبلغ باید بزرگ‌تر از صفر باشد");
     const worker = await sql<{ id: number }>`
       select id from parties
@@ -369,7 +371,7 @@ async function applyDeliveryPlan(
       const bom = await sql<{ raw_item_id: number; quantity: unknown; name: string }>`
         select b.raw_item_id, b.quantity, i.name
         from bom_lines b
-        join items i on i.id = b.raw_item_id
+        join items i on i.id = b.raw_item_id and i.user_id = b.user_id
         where b.product_id = ${productId} and b.user_id = ${userId}
       `;
       const short: string[] = [];
@@ -448,7 +450,7 @@ async function applyDeliveryPlan(
       const bom = await sql<{ raw_item_id: number; quantity: unknown; name: string }>`
         select b.raw_item_id, b.quantity, i.name
         from bom_lines b
-        join items i on i.id = b.raw_item_id
+        join items i on i.id = b.raw_item_id and i.user_id = b.user_id
         where b.product_id = ${productId} and b.user_id = ${userId}
       `;
       for (const line of bom) {
@@ -501,6 +503,7 @@ export const updateWorkerDelivery = createServerFn({ method: "POST" })
     if (data.quantity <= EPS) throw new Error("تعداد تحویل باید بزرگ‌تر از صفر باشد");
     // STR-03: quantity plan, date and worker change are one transaction (any later error undoes the earlier writes).
     return withTransaction(async (sql) => {
+      await assertOwned(sql, context.userId, [["parties", data.toWorkerId]]);
       const head = await loadDeliveryHead(sql, context.userId, data.id);
       if (!head) throw new Error("ردیف تحویل یافت نشد");
       await assertContractOrder(sql, context.userId, head.workerId);

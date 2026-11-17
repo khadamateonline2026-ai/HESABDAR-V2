@@ -6,6 +6,7 @@ import type { InventoryData, ProductionStage, WorkOrder } from "@/lib/types";
 import { isLastStage } from "@/lib/types";
 import { loadInventoryState, requireWriteAny, sqlOf, assertUniqueItemName, wageForProduct, assertAccountantPin } from "./helpers";
 import { encodeUsageError, type UsageFocus } from "@/lib/usage-focus";
+import { assertOwned } from "./ownership";
 
 async function snapshotWage(
   sql: Awaited<ReturnType<typeof sqlOf>>,
@@ -61,7 +62,7 @@ async function recipeForOrder(
   const bom = await sql<{ raw_item_id: number; quantity: unknown; name: string }>`
     select b.raw_item_id, b.quantity, i.name
     from bom_lines b
-    join items i on i.id = b.raw_item_id
+    join items i on i.id = b.raw_item_id and i.user_id = b.user_id
     where b.product_id = ${productId} and b.user_id = ${userId}
   `;
   return bom.map((line) => ({
@@ -92,6 +93,11 @@ export const saveCatalogItem = createServerFn({ method: "POST" })
   .handler(async ({ context, data }) => {
     const sql = await sqlOf();
     await requireWriteAny(sql, context.userId, ["warehouses", "purchase", "sales"]);
+    await assertOwned(sql, context.userId, [
+      ["item_categories", data.categoryId],
+      ["units", data.unitId],
+      ...(data.bom ?? []).map((l) => ["items", l.rawItemId] as const),
+    ]);
     const name = data.name.trim();
     if (!name) throw new Error("نام لازم است");
     const kind = data.kind === "raw" ? "raw" : "product";
@@ -210,7 +216,7 @@ async function findItemUsage(
   const bom = await sql<{ product_id: number; name: string }>`
     select b.product_id, it.name
     from bom_lines b
-    join items it on it.id = b.product_id
+    join items it on it.id = b.product_id and it.user_id = b.user_id
     where b.user_id = ${userId} and b.raw_item_id = ${itemId}
     order by b.id desc
     limit 1
@@ -227,7 +233,7 @@ async function findItemUsage(
   const order = await sql<{ id: number; name: string }>`
     select o.id, it.name
     from work_orders o
-    join items it on it.id = o.product_id
+    join items it on it.id = o.product_id and it.user_id = o.user_id
     where o.user_id = ${userId} and o.product_id = ${itemId}
     order by o.id desc
     limit 1
@@ -244,7 +250,7 @@ async function findItemUsage(
   const alloc = await sql<{ work_order_id: number; name: string }>`
     select a.work_order_id, coalesce(it.name, a.raw_item_name) as name
     from work_order_alloc a
-    left join items it on it.id = a.raw_item_id
+    left join items it on it.id = a.raw_item_id and it.user_id = a.user_id
     where a.user_id = ${userId} and a.raw_item_id = ${itemId}
     order by a.id desc
     limit 1
@@ -314,8 +320,8 @@ export const listWorkOrders = createServerFn({ method: "GET" })
       sql<Record<string, unknown>>`
         select o.*, p.name as worker_name, st.name as stage_name
         from work_orders o
-        left join parties p on p.id = o.worker_id
-        left join production_stages st on st.id = o.stage_id
+        left join parties p on p.id = o.worker_id and p.user_id = o.user_id
+        left join production_stages st on st.id = o.stage_id and st.user_id = o.user_id
         where o.user_id = ${context.userId}
         order by o.occurred_on desc, o.id desc
       `,
@@ -373,6 +379,7 @@ export const createWorkOrder = createServerFn({ method: "POST" })
   .handler(async ({ context, data }) => {
     const sql = await sqlOf();
     await requireWriteAny(sql, context.userId, ["warehouses", "workers"]);
+    await assertOwned(sql, context.userId, [["items", data.productId], ["parties", data.workerId]]);
     if (data.quantity <= 0) throw new Error("تعداد سفارش باید بزرگ‌تر از صفر باشد");
     const product = await sql<{ id: number; name: string; kind: string }>`
       select id, name, kind from items where id = ${data.productId} and user_id = ${context.userId}
@@ -392,7 +399,7 @@ export const createWorkOrder = createServerFn({ method: "POST" })
       const bom = await sql<{ raw_item_id: number; quantity: unknown; name: string }>`
         select b.raw_item_id, b.quantity, i.name
         from bom_lines b
-        join items i on i.id = b.raw_item_id
+        join items i on i.id = b.raw_item_id and i.user_id = b.user_id
         where b.product_id = ${data.productId} and b.user_id = ${context.userId}
       `;
       if (!bom.length) throw new Error("فرمول مواد خام این کالا ثبت نشده است");
@@ -444,6 +451,7 @@ export const listPriorProductGivers = createServerFn({ method: "POST" })
   .validator((d: { workerId: number; productId: number }) => d)
   .handler(async ({ context, data }): Promise<number[]> => {
     const sql = await sqlOf();
+    await assertOwned(sql, context.userId, [["items", data.productId], ["parties", data.workerId]]);
     const rows = await sql<{ worker_id: number }>`
       select distinct o.worker_id
       from work_deliveries d
@@ -472,6 +480,7 @@ export const deliverWorkOrder = createServerFn({ method: "POST" })
   .handler(async ({ context, data }) => {
     const sql = await sqlOf();
     await requireWriteAny(sql, context.userId, ["warehouses", "workers"]);
+    await assertOwned(sql, context.userId, [["parties", data.toWorkerId]]);
     if (data.quantity <= 0) throw new Error("تعداد تحویل باید بزرگ‌تر از صفر باشد");
     // STR-03: the delivery row, the child order and delivered_qty change together; the order row is locked so two deliveries cannot both pass the remaining-quantity check.
     return withTransaction(async (sql) => {
@@ -630,6 +639,7 @@ export const updateWorkOrder = createServerFn({ method: "POST" })
   .handler(async ({ context, data }) => {
     const sql = await sqlOf();
     await requireWriteAny(sql, context.userId, ["warehouses", "workers"]);
+    await assertOwned(sql, context.userId, [["items", data.productId], ["parties", data.workerId]]);
     if (data.quantity <= 0) throw new Error("تعداد سفارش باید بزرگ‌تر از صفر باشد");
     const order = await sql<{
       id: number;
@@ -669,7 +679,7 @@ export const updateWorkOrder = createServerFn({ method: "POST" })
       const bom = await sql<{ raw_item_id: number; quantity: unknown; name: string }>`
         select b.raw_item_id, b.quantity, i.name
         from bom_lines b
-        join items i on i.id = b.raw_item_id
+        join items i on i.id = b.raw_item_id and i.user_id = b.user_id
         where b.product_id = ${data.productId} and b.user_id = ${context.userId}
       `;
       if (!bom.length) throw new Error("فرمول مواد خام این کالا ثبت نشده است");

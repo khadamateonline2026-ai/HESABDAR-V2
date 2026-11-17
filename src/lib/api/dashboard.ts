@@ -38,13 +38,13 @@ export const getDashboard = createServerFn({ method: "GET" })
       sql<Record<string, unknown>>`
         select s.*, i.fx_enabled, i.fx_rate
         from sales s
-        left join sale_invoices i on i.id = s.invoice_id
+        left join sale_invoices i on i.id = s.invoice_id and i.user_id = s.user_id
         where s.user_id = ${context.userId}
       `,
       sql<Record<string, unknown>>`
         select p.*, i.fx_enabled, i.fx_rate
         from purchases p
-        left join purchase_invoices i on i.id = p.invoice_id
+        left join purchase_invoices i on i.id = p.invoice_id and i.user_id = p.user_id
         where p.user_id = ${context.userId}
       `,
       sql<Record<string, unknown>>`select amount, currency_id, as_debt, fx_rate from expenses where user_id = ${context.userId}`,
@@ -63,7 +63,7 @@ export const getDashboard = createServerFn({ method: "GET" })
       sql<Record<string, unknown>>`
         select wp.worker_id, wp.amount, p.employment
         from worker_payments wp
-        join parties p on p.id = wp.worker_id
+        join parties p on p.id = wp.worker_id and p.user_id = wp.user_id
         where wp.user_id = ${context.userId}
       `,
       sql<Record<string, unknown>>`
@@ -127,8 +127,8 @@ export const getDashboard = createServerFn({ method: "GET" })
     const cashTakeRows = await sql<{ amount: unknown; fx_rate: unknown; rate_to_base: unknown }>`
       select p.amount, p.fx_rate, c.rate_to_base
       from party_payments p
-      join parties pt on pt.id = p.party_id
-      join currencies c on c.id = p.currency_id
+      join parties pt on pt.id = p.party_id and pt.user_id = p.user_id
+      join currencies c on c.id = p.currency_id and c.user_id = p.user_id
       where p.user_id = ${context.userId} and pt.kind = ${"customer"} and p.kind = ${"payment"}
         and p.sale_invoice_id is null and p.applied_sale_id is null
     `;

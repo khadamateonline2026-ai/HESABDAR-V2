@@ -12,6 +12,7 @@ import {
   type PartyKind,
 } from "./party-history";
 import { guard, requireWriteAny, rethrow, sqlOf, assertUniqueItemName, syncSalariedWorker, assertAccountantPin } from "./helpers";
+import { assertOwned } from "./ownership";
 
 const WAGE_OVERHEAD_TITLE = "نرخ دستمزد";
 const WAGE_OVERHEAD_PREFIX = "نرخ دستمزد — ";
@@ -190,7 +191,7 @@ export const listWageRates = createServerFn({ method: "GET" })
     const rows = await sql<Record<string, unknown>>`
       select w.*, j.name as job_type_name
       from wage_rates w
-      join job_types j on j.id = w.job_type_id
+      join job_types j on j.id = w.job_type_id and j.user_id = w.user_id
       where w.user_id = ${context.userId}
       order by w.id desc
     `;
@@ -219,6 +220,7 @@ export const saveWageRate = createServerFn({ method: "POST" })
   )
   .handler(async ({ context, data }) => {
     const { sql } = await guard(context.userId, "wages");
+    await assertOwned(sql, context.userId, [["job_types", data.jobTypeId]]);
     if (data.id) {
       await sql`
         update wage_rates
@@ -319,6 +321,12 @@ export const saveParty = createServerFn({ method: "POST" })
       kind = data.kind;
     }
     const { sql } = await guard(context.userId, partyArea(kind));
+    await assertOwned(sql, context.userId, [
+      ["party_categories", data.categoryId],
+      ["job_types", data.jobTypeId],
+      ["currencies", data.currencyId],
+      ["production_stages", data.kind === "worker" ? data.stageId : null],
+    ]);
     data = { ...data, kind };
     const name = data.name.trim();
     if (!name) throw new Error("نام لازم است");
@@ -435,6 +443,11 @@ export const saveItem = createServerFn({ method: "POST" })
   .handler(async ({ context, data }) => {
     const sql = await sqlOf();
     await requireWriteAny(sql, context.userId, ["purchase", "sales", "warehouses"]);
+    await assertOwned(sql, context.userId, [
+      ["item_categories", data.categoryId],
+      ["item_types", data.typeId],
+      ["units", data.unitId],
+    ]);
     const name = data.name.trim();
     if (!name) throw new Error("نام لازم است");
     const kind = data.kind === "raw" ? "raw" : "product";

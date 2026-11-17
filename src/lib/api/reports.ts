@@ -7,6 +7,7 @@ import { loadRecurringDues } from "./ops";
 import type { Item, ModelSummary, PartyPayment, PartySummary, PurchaseLedgerRow, SaleLedgerRow } from "@/lib/types";
 import { withTransaction, type Sql } from "@/lib/db";
 import { deleteLinkedPayment, loadLinkedPayment, updateLinkedPayment } from "./linked-payment";
+import { assertOwned } from "./ownership";
 
 function inRange(iso: string, from?: string | null, to?: string | null): boolean {
   if (from && iso < from) return false;
@@ -35,8 +36,8 @@ export async function loadExpenseDebts(
     select e.id, e.title, e.amount, e.occurred_on, e.currency_id, c.symbol as currency_symbol, c.rate_to_base,
       p.name as party_name
     from expenses e
-    join currencies c on c.id = e.currency_id
-    left join parties p on p.id = e.party_id
+    join currencies c on c.id = e.currency_id and c.user_id = e.user_id
+    left join parties p on p.id = e.party_id and p.user_id = e.user_id
     where e.user_id = ${userId} and e.as_debt = true
     order by e.occurred_on desc, e.id desc
   `;
@@ -188,7 +189,7 @@ export async function loadPartySummaries(
       select s.customer_id as party_id, s.quantity, s.unit_price, s.status, s.currency_id, s.occurred_on,
         inv.fx_enabled, inv.fx_rate, inv.currency_id as inv_currency_id
       from sales s
-      left join sale_invoices inv on inv.id = s.invoice_id
+      left join sale_invoices inv on inv.id = s.invoice_id and inv.user_id = s.user_id
       where s.user_id = ${userId}
     `;
     for (const r of sales) {
@@ -212,8 +213,8 @@ export async function loadPartySummaries(
     const pays = await sql<Record<string, unknown>>`
       select p.party_id, p.amount, p.currency_id, p.occurred_on, p.kind, p.fx_rate, c.rate_to_base
       from party_payments p
-      join currencies c on c.id = p.currency_id
-      join parties pt on pt.id = p.party_id
+      join currencies c on c.id = p.currency_id and c.user_id = p.user_id
+      join parties pt on pt.id = p.party_id and pt.user_id = p.user_id
       where p.user_id = ${userId} and pt.kind = ${"customer"} and p.applied_sale_id is null and p.sale_invoice_id is null
     `;
     for (const p of pays) {
@@ -248,7 +249,7 @@ export async function loadPartySummaries(
       select p.vendor_id as party_id, p.quantity, p.unit_price, p.status, p.currency_id, p.occurred_on,
         inv.fx_enabled, inv.fx_rate, inv.currency_id as inv_currency_id
       from purchases p
-      left join purchase_invoices inv on inv.id = p.invoice_id
+      left join purchase_invoices inv on inv.id = p.invoice_id and inv.user_id = p.user_id
       where p.user_id = ${userId}
     `;
     for (const r of purchases) {
@@ -263,8 +264,8 @@ export async function loadPartySummaries(
     const pays = await sql<Record<string, unknown>>`
       select p.party_id, p.amount, p.currency_id, p.occurred_on, p.kind, p.fx_rate, c.rate_to_base
       from party_payments p
-      join currencies c on c.id = p.currency_id
-      join parties pt on pt.id = p.party_id
+      join currencies c on c.id = p.currency_id and c.user_id = p.user_id
+      join parties pt on pt.id = p.party_id and pt.user_id = p.user_id
       where p.user_id = ${userId} and pt.kind = ${"vendor"}
     `;
     for (const p of pays) {
@@ -293,13 +294,14 @@ export const getSalesLedger = createServerFn({ method: "POST" })
   .handler(async ({ context, data }) => {
     const sql = await sqlOf();
     await requireProfile(sql, context.userId);
+    await assertOwned(sql, context.userId, [["items", data.itemId]]);
     const [items, currencies, sales] = await Promise.all([
       sql<Record<string, unknown>>`select id, name, kind from items where user_id = ${context.userId} order by name`,
       sql<{ id: number; rate_to_base: unknown }>`select id, rate_to_base from currencies where user_id = ${context.userId}`,
       sql<Record<string, unknown>>`
         select s.*, i.kind as item_kind
         from sales s
-        left join items i on i.id = s.item_id
+        left join items i on i.id = s.item_id and i.user_id = s.user_id
         where s.user_id = ${context.userId}
         order by s.occurred_on, s.id
       `,
@@ -386,9 +388,9 @@ async function loadCashPartyPaymentRows(
       a1.currency_id as from_cur, a2.currency_id as to_cur,
       c.symbol as currency_symbol, coalesce(nullif(t.from_rate, 0), c.rate_to_base) as rate_to_base
     from transfers t
-    join accounts a1 on a1.id = t.from_account_id
-    join accounts a2 on a2.id = t.to_account_id
-    join currencies c on c.id = a1.currency_id
+    join accounts a1 on a1.id = t.from_account_id and a1.user_id = t.user_id
+    join accounts a2 on a2.id = t.to_account_id and a2.user_id = t.user_id
+    join currencies c on c.id = a1.currency_id and c.user_id = a1.user_id
     where t.user_id = ${userId}
     order by t.occurred_on desc, t.id desc
   `;
@@ -482,15 +484,15 @@ async function loadCashPartyStatement(
     sql<Record<string, unknown>>`
       select t.*, a1.name as from_name, a2.name as to_name, a1.currency_id as from_cur
       from transfers t
-      join accounts a1 on a1.id = t.from_account_id
-      join accounts a2 on a2.id = t.to_account_id
+      join accounts a1 on a1.id = t.from_account_id and a1.user_id = t.user_id
+      join accounts a2 on a2.id = t.to_account_id and a2.user_id = t.user_id
       where t.user_id = ${userId} and (t.from_account_id = ${accountId} or t.to_account_id = ${accountId})
       order by t.occurred_on desc, t.id desc
     `,
     sql<Record<string, unknown>>`
       select o.*, c.symbol as currency_symbol, coalesce(nullif(o.fx_rate, 0), c.rate_to_base) as rate_to_base
       from opening_cash o
-      join currencies c on c.id = o.currency_id
+      join currencies c on c.id = o.currency_id and c.user_id = o.user_id
       where o.user_id = ${userId} and o.account_id = ${accountId}
       order by o.occurred_on desc, o.id desc
     `,
@@ -683,9 +685,9 @@ export const getPartyStatement = createServerFn({ method: "POST" })
     const payRows = await sql<Record<string, unknown>>`
       select p.*, c.symbol as currency_symbol, c.rate_to_base, a.name as account_name, pt.name as party_name
       from party_payments p
-      join currencies c on c.id = p.currency_id
-      left join accounts a on a.id = p.account_id
-      join parties pt on pt.id = p.party_id
+      join currencies c on c.id = p.currency_id and c.user_id = p.user_id
+      left join accounts a on a.id = p.account_id and a.user_id = p.user_id
+      join parties pt on pt.id = p.party_id and pt.user_id = p.user_id
       where p.user_id = ${context.userId} and p.party_id = ${data.partyId}
       order by p.occurred_on desc, p.id desc
     `;
@@ -722,8 +724,8 @@ export const getPartyStatement = createServerFn({ method: "POST" })
       const sales = await sql<Record<string, unknown>>`
         select s.*, i.kind as item_kind, inv.fx_enabled, inv.fx_rate, inv.currency_id as inv_currency_id
         from sales s
-        left join items i on i.id = s.item_id
-        left join sale_invoices inv on inv.id = s.invoice_id
+        left join items i on i.id = s.item_id and i.user_id = s.user_id
+        left join sale_invoices inv on inv.id = s.invoice_id and inv.user_id = s.user_id
         where s.user_id = ${context.userId} and s.customer_id = ${data.partyId}
         order by s.occurred_on desc, s.id desc
       `;
@@ -801,8 +803,8 @@ export const getPartyStatement = createServerFn({ method: "POST" })
     const purchases = await sql<Record<string, unknown>>`
       select p.*, i.kind as item_kind, inv.fx_enabled, inv.fx_rate, inv.currency_id as inv_currency_id
       from purchases p
-      left join items i on i.id = p.item_id
-      left join purchase_invoices inv on inv.id = p.invoice_id
+      left join items i on i.id = p.item_id and i.user_id = p.user_id
+      left join purchase_invoices inv on inv.id = p.invoice_id and inv.user_id = p.user_id
       where p.user_id = ${context.userId} and p.vendor_id = ${data.partyId}
       order by p.occurred_on desc, p.id desc
     `;
@@ -877,6 +879,15 @@ export const savePartyPayment = createServerFn({ method: "POST" })
     if (data.amount <= 0) throw new Error("مبلغ باید بزرگ‌تر از صفر باشد");
     // STR-03: balance check, the write and the receipt number (and a linked invoice header, ACC-03) are one transaction; the paying account is locked during the check.
     return withTransaction(async (sql) => {
+      const ownCash = accountIdFromCashOption(data.partyId);
+      await assertOwned(sql, context.userId, [
+        ["accounts", ownCash],
+        ["parties", ownCash == null ? data.partyId : null],
+        ["accounts", data.accountId],
+        ["currencies", data.currencyId],
+        ["party_payments", data.id && data.id > 0 ? data.id : null],
+        ["transfers", data.id && data.id < 0 ? -data.id : null],
+      ]);
       const catalogs = await loadCatalogs(sql, context.userId);
       const storedRate = data.fxRate && data.fxRate > 1e-12
         ? data.fxRate
@@ -1040,10 +1051,10 @@ export const listPartyPayments = createServerFn({ method: "POST" })
       select p.*, c.symbol as currency_symbol, c.rate_to_base, a.name as account_name, pt.name as party_name,
         pt.kind as party_kind, pc.name as category_name
       from party_payments p
-      join currencies c on c.id = p.currency_id
-      left join accounts a on a.id = p.account_id
-      join parties pt on pt.id = p.party_id
-      left join party_categories pc on pc.id = pt.category_id
+      join currencies c on c.id = p.currency_id and c.user_id = p.user_id
+      left join accounts a on a.id = p.account_id and a.user_id = p.user_id
+      join parties pt on pt.id = p.party_id and pt.user_id = p.user_id
+      left join party_categories pc on pc.id = pt.category_id and pc.user_id = pt.user_id
       where p.user_id = ${context.userId} and p.kind = ${data.kind}
         and p.purchase_invoice_id is null and p.sale_invoice_id is null
       order by p.occurred_on desc, p.id desc

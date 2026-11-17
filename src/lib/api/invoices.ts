@@ -14,6 +14,7 @@ import {
   requireProfile,
   sqlOf,
 } from "./helpers";
+import { assertOwned } from "./ownership";
 
 type LineIn = {
   itemId: number | null;
@@ -139,17 +140,17 @@ export const listPurchaseInvoices = createServerFn({ method: "GET" })
     const headers = await sql<Record<string, unknown>>`
       select i.*, v.name as vendor_name, c.symbol as currency_symbol, a.name as account_name
       from purchase_invoices i
-      left join parties v on v.id = i.vendor_id
-      join currencies c on c.id = i.currency_id
-      left join accounts a on a.id = i.account_id
+      left join parties v on v.id = i.vendor_id and v.user_id = i.user_id
+      join currencies c on c.id = i.currency_id and c.user_id = i.user_id
+      left join accounts a on a.id = i.account_id and a.user_id = i.user_id
       where i.user_id = ${context.userId}
       order by i.occurred_on desc, i.id desc
     `;
     const lines = await sql<Record<string, unknown>>`
       select p.*, u.name as unit_name, it.kind as item_kind
       from purchases p
-      left join units u on u.id = p.unit_id
-      left join items it on it.id = p.item_id
+      left join units u on u.id = p.unit_id and u.user_id = p.user_id
+      left join items it on it.id = p.item_id and it.user_id = p.user_id
       where p.user_id = ${context.userId}
       order by p.line_no, p.id
     `;
@@ -218,6 +219,13 @@ export const savePurchaseInvoice = createServerFn({ method: "POST" })
     for (let attempt = 0; attempt < 5; attempt++) {
       try {
         return await withTransaction(async (sql) => {
+          await assertOwned(sql, context.userId, [
+            ["parties", data.vendorId],
+            ["accounts", data.accountId],
+            ["currencies", data.currencyId],
+            ["purchase_invoices", data.id],
+            ...cleanLines.flatMap((l) => [["items", l.itemId] as const, ["units", l.unitId] as const]),
+          ]);
     await assertPurchaseFunds(sql, context.userId, {
       accountId: data.accountId,
       paidAmount: data.paidAmount,
@@ -339,6 +347,7 @@ export const receivePurchaseInvoice = createServerFn({ method: "POST" })
     await guard(context.userId, "purchase");
     // STR-03: line quantities, item categories and the invoice status change together; the invoice row is locked so two partial receives are applied one after the other.
     return withTransaction(async (sql) => {
+      await assertOwned(sql, context.userId, [["item_categories", data.categoryId]]);
       const header = await sql<{ id: number }>`
         select id from purchase_invoices where id = ${data.id} and user_id = ${context.userId}
         for update
@@ -396,17 +405,17 @@ export const listSaleInvoices = createServerFn({ method: "GET" })
     const headers = await sql<Record<string, unknown>>`
       select i.*, p.name as customer_name, c.symbol as currency_symbol, a.name as account_name
       from sale_invoices i
-      left join parties p on p.id = i.customer_id
-      join currencies c on c.id = i.currency_id
-      left join accounts a on a.id = i.account_id
+      left join parties p on p.id = i.customer_id and p.user_id = i.user_id
+      join currencies c on c.id = i.currency_id and c.user_id = i.user_id
+      left join accounts a on a.id = i.account_id and a.user_id = i.user_id
       where i.user_id = ${context.userId}
       order by i.occurred_on desc, i.id desc
     `;
     const lines = await sql<Record<string, unknown>>`
       select s.*, u.name as unit_name, it.kind as item_kind
       from sales s
-      left join units u on u.id = s.unit_id
-      left join items it on it.id = s.item_id
+      left join units u on u.id = s.unit_id and u.user_id = s.user_id
+      left join items it on it.id = s.item_id and it.user_id = s.user_id
       where s.user_id = ${context.userId}
       order by s.line_no, s.id
     `;
@@ -487,6 +496,16 @@ export const saveSaleInvoice = createServerFn({ method: "POST" })
     if (!cleanLines.length) throw new Error("حداقل یک ردیف کالا لازم است");
     if (!data.id && data.customerId == null) throw new Error("مشتری را انتخاب کنید");
     await ensureSaleColumns(sql);
+    await assertOwned(sql, context.userId, [
+      ["parties", data.customerId],
+      ["accounts", data.accountId],
+      ["accounts", data.refundAccountId],
+      ["currencies", data.currencyId],
+      ["currencies", data.receivedCurrencyId],
+      ["sale_invoices", data.id],
+      ...(data.cashPaymentIds ?? []).filter((id) => Number(id) > 0).map((id) => ["party_payments", Number(id)] as const),
+      ...cleanLines.flatMap((l) => [["items", l.itemId] as const, ["units", l.unitId] as const]),
+    ]);
     for (let attempt = 0; attempt < 5; attempt++) {
       try {
         return await withTransaction(async (sql) => {
@@ -701,7 +720,7 @@ export const listCustomerCashTakes = createServerFn({ method: "POST" })
     const rows = await sql<Record<string, unknown>>`
       select p.id, p.amount, p.fx_rate, p.occurred_on, p.notes, p.applied_sale_id, c.symbol, c.rate_to_base
       from party_payments p
-      join currencies c on c.id = p.currency_id
+      join currencies c on c.id = p.currency_id and c.user_id = p.user_id
       where p.user_id = ${context.userId} and p.party_id = ${data.customerId}
         and p.kind = ${"payment"} and p.sale_invoice_id is null
         and (p.applied_sale_id is null or p.applied_sale_id = ${data.invoiceId ?? 0})
