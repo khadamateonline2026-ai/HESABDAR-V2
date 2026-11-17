@@ -5,10 +5,11 @@ import { withTransaction } from "@/lib/db";
 import { sqlOf, guard, assertCashAvailable, loadCatalogs, loadInventoryState, fxToBase, lockStock } from "./helpers";
 import { assertOwned } from "./ownership";
 import { idempotent } from "./idempotency";
+import { validInput, validPositive } from "./validate";
 
 export const saveAccount = createServerFn({ method: "POST" })
   .middleware([authMiddleware])
-  .validator((d: { id?: number; name: string; currencyId: number; openingBalance: number; kind?: "cash" | "counterparty" }) => d)
+  .validator((d: { id?: number; name: string; currencyId: number; openingBalance: number; kind?: "cash" | "counterparty" }) => validInput(d))
   .handler(async ({ context, data }) => {
     const { sql } = await guard(context.userId, "accounts");
     await assertOwned(sql, context.userId, [["currencies", data.currencyId]]);
@@ -30,7 +31,7 @@ export const saveAccount = createServerFn({ method: "POST" })
 
 export const deleteAccount = createServerFn({ method: "POST" })
   .middleware([authMiddleware])
-  .validator((d: { id: number }) => d)
+  .validator((d: { id: number }) => validInput(d))
   .handler(async ({ context, data }) => {
     const { sql } = await guard(context.userId, "accounts");
     await sql`delete from accounts where id = ${data.id} and user_id = ${context.userId}`;
@@ -71,7 +72,7 @@ export const saveTransfer = createServerFn({ method: "POST" })
       amount: number;
       occurredOn: string;
       notes: string;
-    }) => d,
+    }) => validPositive(d, "amount"),
   )
   .handler(async ({ context, data }) => {
     await guard(context.userId, "transfers");
@@ -120,7 +121,7 @@ export const saveTransfer = createServerFn({ method: "POST" })
 
 export const deleteTransfer = createServerFn({ method: "POST" })
   .middleware([authMiddleware])
-  .validator((d: { id: number }) => d)
+  .validator((d: { id: number }) => validInput(d))
   .handler(async ({ context, data }) => {
     const { sql } = await guard(context.userId, "transfers");
     await sql`delete from transfers where id = ${data.id} and user_id = ${context.userId}`;
@@ -163,7 +164,7 @@ export const saveCapital = createServerFn({ method: "POST" })
       amount: number;
       occurredOn: string;
       notes: string;
-    }) => d,
+    }) => validPositive(d, "amount"),
   )
   .handler(async ({ context, data }) => {
     const { sql } = await guard(context.userId, "capital");
@@ -210,7 +211,7 @@ export const saveCapital = createServerFn({ method: "POST" })
 
 export const deleteCapital = createServerFn({ method: "POST" })
   .middleware([authMiddleware])
-  .validator((d: { id: number }) => d)
+  .validator((d: { id: number }) => validInput(d))
   .handler(async ({ context, data }) => {
     const { sql } = await guard(context.userId, "capital");
     await sql`delete from capital_moves where id = ${data.id} and user_id = ${context.userId}`;
@@ -251,7 +252,7 @@ export const saveOpeningCash = createServerFn({ method: "POST" })
       amount: number;
       occurredOn: string;
       notes: string;
-    }) => d,
+    }) => validInput(d),
   )
   .handler(async ({ context, data }) => {
     const { sql } = await guard(context.userId, "opening");
@@ -296,7 +297,7 @@ export const saveOpeningCash = createServerFn({ method: "POST" })
 
 export const deleteOpeningCash = createServerFn({ method: "POST" })
   .middleware([authMiddleware])
-  .validator((d: { id: number }) => d)
+  .validator((d: { id: number }) => validInput(d))
   .handler(async ({ context, data }) => {
     const { sql } = await guard(context.userId, "opening");
     await sql`delete from opening_cash where id = ${data.id} and user_id = ${context.userId}`;
@@ -305,7 +306,7 @@ export const deleteOpeningCash = createServerFn({ method: "POST" })
 
 export const listOpeningStock = createServerFn({ method: "POST" })
   .middleware([authMiddleware])
-  .validator((d: { kind: "finished" | "raw" }) => d)
+  .validator((d: { kind: "finished" | "raw" }) => validInput(d))
   .handler(async ({ context, data }) => {
     const sql = await sqlOf();
     const rows = await sql<Record<string, unknown>>`
@@ -360,7 +361,7 @@ async function lastRawUnitCost(
 
 export const lastRawPurchaseRate = createServerFn({ method: "POST" })
   .middleware([authMiddleware])
-  .validator((d: { itemName: string }) => d)
+  .validator((d: { itemName: string }) => validInput(d))
   .handler(async ({ context, data }) => {
     const sql = await sqlOf();
     const name = data.itemName.trim();
@@ -382,7 +383,7 @@ export const saveOpeningStock = createServerFn({ method: "POST" })
       unitCost?: number;
       occurredOn: string;
       notes: string;
-    }) => d,
+    }) => validInput(d),
   )
   .handler(async ({ context, data }) =>
     // STR-04: a replayed offline save returns its first result.
@@ -447,7 +448,7 @@ export const saveOpeningStock = createServerFn({ method: "POST" })
 
 export const deleteOpeningStock = createServerFn({ method: "POST" })
   .middleware([authMiddleware])
-  .validator((d: { id: number }) => d)
+  .validator((d: { id: number }) => validInput(d))
   .handler(async ({ context, data }) => {
     const { sql } = await guard(context.userId, "opening");
     await sql`delete from opening_stock where id = ${data.id} and user_id = ${context.userId}`;

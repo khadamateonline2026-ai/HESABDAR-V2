@@ -9,6 +9,7 @@ import { withTransaction, type Sql } from "@/lib/db";
 import { deleteLinkedPayment, loadLinkedPayment, updateLinkedPayment } from "./linked-payment";
 import { assertOwned } from "./ownership";
 import { idempotent } from "./idempotency";
+import { validInput } from "./validate";
 
 function inRange(iso: string, from?: string | null, to?: string | null): boolean {
   if (from && iso < from) return false;
@@ -279,7 +280,7 @@ export async function loadPartySummaries(
 
 export const getSalesLedger = createServerFn({ method: "POST" })
   .middleware([authMiddleware])
-  .validator((d: { itemId?: number | null }) => d)
+  .validator((d: { itemId?: number | null }) => validInput(d))
   .handler(async ({ context, data }) => {
     const sql = await sqlOf();
     await requireProfile(sql, context.userId);
@@ -879,7 +880,7 @@ export async function partyStatementTx(
 
 export const getPartyStatement = createServerFn({ method: "POST" })
   .middleware([authMiddleware])
-  .validator((d: { kind: "customer" | "vendor"; partyId?: number | null; from?: string | null; to?: string | null }) => d)
+  .validator((d: { kind: "customer" | "vendor"; partyId?: number | null; from?: string | null; to?: string | null }) => validInput(d))
   .handler(async ({ context, data }) => {
     const sql = await sqlOf();
     await requireProfile(sql, context.userId);
@@ -888,7 +889,7 @@ export const getPartyStatement = createServerFn({ method: "POST" })
 
 export const listOutstandingParties = createServerFn({ method: "POST" })
   .middleware([authMiddleware])
-  .validator((d: { side: "debtor" | "creditor" }) => d)
+  .validator((d: { side: "debtor" | "creditor" }) => validInput(d))
   .handler(async ({ context, data }) => {
     const sql = await sqlOf();
     await requireProfile(sql, context.userId);
@@ -915,7 +916,7 @@ export const savePartyPayment = createServerFn({ method: "POST" })
       accountId: number | null;
       occurredOn: string;
       notes: string;
-    }) => d,
+    }) => validInput(d),
   )
   .handler(async ({ context, data }) =>
     // STR-04: a replayed offline save returns its first result.
@@ -1057,7 +1058,7 @@ export const savePartyPayment = createServerFn({ method: "POST" })
 
 export const deletePartyPayment = createServerFn({ method: "POST" })
   .middleware([authMiddleware])
-  .validator((d: { id: number }) => d)
+  .validator((d: { id: number }) => validInput(d))
   .handler(async ({ context, data }) => {
     if (data.id < 0) {
       const { sql } = await guard(context.userId, "payments");
@@ -1083,7 +1084,7 @@ export const deletePartyPayment = createServerFn({ method: "POST" })
 
 export const listPartyPayments = createServerFn({ method: "POST" })
   .middleware([authMiddleware])
-  .validator((d: { kind: "receipt" | "payment" }) => d)
+  .validator((d: { kind: "receipt" | "payment" }) => validInput(d))
   .handler(async ({ context, data }) => {
     const sql = await sqlOf();
     await requireProfile(sql, context.userId);
@@ -1133,7 +1134,7 @@ export const listPartyPayments = createServerFn({ method: "POST" })
 
 export const getPartyBalance = createServerFn({ method: "POST" })
   .middleware([authMiddleware])
-  .validator((d: { partyId: number }) => d)
+  .validator((d: { partyId: number }) => validInput(d))
   .handler(async ({ context, data }) => {
     const sql = await sqlOf();
     await requireProfile(sql, context.userId);
@@ -1334,7 +1335,7 @@ export const listActivityLog = createServerFn({ method: "GET" })
 
 export const deleteActivityLog = createServerFn({ method: "POST" })
   .middleware([authMiddleware])
-  .validator((d: { id: number }) => d)
+  .validator((d: { id: number }) => validInput(d))
   .handler(async ({ context, data }) => {
     const { sql } = await guard(context.userId, "reports");
     await sql`delete from activity_log where id = ${data.id} and user_id = ${context.userId}`;
@@ -1343,7 +1344,7 @@ export const deleteActivityLog = createServerFn({ method: "POST" })
 
 export const resetActivityLog = createServerFn({ method: "POST" })
   .middleware([authMiddleware])
-  .validator((d: { code: string }) => d)
+  .validator((d: { code: string }) => validInput(d))
   .handler(async ({ context, data }) => {
     const { sql } = await guard(context.userId, "reports");
     await assertAccountantPin(sql, context.userId, data.code);

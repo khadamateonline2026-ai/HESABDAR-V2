@@ -2,6 +2,7 @@ import { createServerFn } from "@tanstack/react-start";
 import { authMiddleware } from "@/lib/auth/middleware";
 import { num, text } from "@/lib/format";
 import { guard, requireProfile, sqlOf } from "./helpers";
+import { validInput } from "./validate";
 
 export type ImportantNote = {
   id: number;
@@ -37,7 +38,7 @@ export const listImportantNotes = createServerFn({ method: "GET" })
 
 export const saveImportantNote = createServerFn({ method: "POST" })
   .middleware([authMiddleware])
-  .validator((d: { id?: number; kind: "text" | "image"; body?: string; image?: string | null }) => d)
+  .validator((d: { id?: number; kind: "text" | "image"; body?: string; image?: string | null }) => validInput(d))
   .handler(async ({ context, data }) => {
     const { sql } = await guard(context.userId, "notes");
     const kind = data.kind === "image" ? "image" : "text";
@@ -63,7 +64,7 @@ export const saveImportantNote = createServerFn({ method: "POST" })
 
 export const deleteImportantNote = createServerFn({ method: "POST" })
   .middleware([authMiddleware])
-  .validator((d: { id: number }) => d)
+  .validator((d: { id: number }) => validInput(d))
   .handler(async ({ context, data }) => {
     const { sql } = await guard(context.userId, "notes");
     await sql`delete from important_notes where id = ${data.id} and user_id = ${context.userId}`;

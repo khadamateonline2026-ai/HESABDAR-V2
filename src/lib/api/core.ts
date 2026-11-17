@@ -23,6 +23,7 @@ import {
   sqlOf,
 } from "./helpers";
 import { peekSessionRole } from "@/lib/session-role-slot";
+import { validInput } from "./validate";
 
 /** Bootstrap payload (exported for tests, SEC-02). */
 export async function bootstrapFor(sql: Sql, userId: string) {
@@ -97,7 +98,7 @@ export const completeOnboarding = createServerFn({ method: "POST" })
       supervisor: string;
       accountant: string;
       seller: string;
-    }) => d,
+    }) => validInput(d),
   )
   .handler(async ({ context, data }) => {
     const { displayName, companyName } = resolveOnboardingIdentity({
@@ -169,7 +170,7 @@ export const saveCompany = createServerFn({ method: "POST" })
       phone2: string;
       phone3: string;
       email: string;
-    }) => d,
+    }) => validInput(d),
   )
   .handler(async ({ context, data }) => {
     const sql = await sqlOf();
@@ -199,7 +200,7 @@ export const saveCompany = createServerFn({ method: "POST" })
 
 export const updateProfileName = createServerFn({ method: "POST" })
   .middleware([authMiddleware])
-  .validator((d: { displayName: string }) => d)
+  .validator((d: { displayName: string }) => validInput(d))
   .handler(async ({ context, data }) => {
     const sql = await sqlOf();
     await requireWrite(sql, context.userId, "settings");
@@ -215,7 +216,7 @@ export const updateProfileName = createServerFn({ method: "POST" })
 
 export const changeRole = createServerFn({ method: "POST" })
   .middleware([authMiddleware])
-  .validator((d: { role: Role; code: string; displayName?: string }) => d)
+  .validator((d: { role: Role; code: string; displayName?: string }) => validInput(d))
   .handler(async ({ context, data }) => {
     const sql = await sqlBeforeRole();
     const owner = await getProfileRow(sql, context.userId);
@@ -344,7 +345,7 @@ export const requestRoleReset = createServerFn({ method: "POST" })
 
 /** Set a new hashed PIN for one role using the emailed one-time link (no session needed). */
 export const applyRoleResetLink = createServerFn({ method: "POST" })
-  .validator((d: { token: string; role: string; pin: string }) => d)
+  .validator((d: { token: string; role: string; pin: string }) => validInput(d))
   .handler(async ({ data }) => {
     const token = (data.token ?? "").trim();
     const pin = (data.pin ?? "").trim();
@@ -374,7 +375,7 @@ export const applyRoleResetLink = createServerFn({ method: "POST" })
 
 export const applyRoleReset = createServerFn({ method: "POST" })
   .middleware([authMiddleware])
-  .validator((d: { emailCode: string; supervisor: string; accountant: string; seller: string }) => d)
+  .validator((d: { emailCode: string; supervisor: string; accountant: string; seller: string }) => validInput(d))
   .handler(async ({ context, data }) => {
     const supervisor = data.supervisor.trim();
     const accountant = data.accountant.trim();

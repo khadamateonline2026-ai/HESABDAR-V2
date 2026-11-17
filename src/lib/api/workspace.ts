@@ -7,6 +7,7 @@ import { authMiddleware } from "@/lib/auth/middleware";
 import { num, text } from "@/lib/format";
 import { type AppSettings, type ColorPreset, type Role } from "@/lib/types";
 import { dumpWorkspace, muteActivityLog, requireManageRoleCodes, requireProfile, requireWrite, restoreWorkspace, rethrow, seedDefaults, sqlOf, unmuteActivityLog, WORKSPACE_TABLES, assertAccountantPin, assertRolePin } from "./helpers";
+import { validInput } from "./validate";
 
 export const saveAppearance = createServerFn({ method: "POST" })
   .middleware([authMiddleware])
@@ -25,7 +26,7 @@ export const saveAppearance = createServerFn({ method: "POST" })
       cardTintStrength: number;
       calendar: AppSettings["calendar"];
       colorPresets?: ColorPreset[];
-    }) => d,
+    }) => validInput(d),
   )
   .handler(async ({ context, data }) => {
     const sql = await sqlOf();
@@ -63,7 +64,7 @@ export const saveAppearance = createServerFn({ method: "POST" })
 
 export const saveRoleCodes = createServerFn({ method: "POST" })
   .middleware([authMiddleware])
-  .validator((d: { supervisor: string; accountant: string; seller: string }) => d)
+  .validator((d: { supervisor: string; accountant: string; seller: string }) => validInput(d))
   .handler(async ({ context, data }) => {
     const sql = await sqlOf();
     await requireManageRoleCodes(sql, context.userId);
@@ -100,7 +101,7 @@ export const saveRoleCodes = createServerFn({ method: "POST" })
 
 export const addStaffUser = createServerFn({ method: "POST" })
   .middleware([authMiddleware])
-  .validator((d: { displayName: string; role: Role; code: string }) => d)
+  .validator((d: { displayName: string; role: Role; code: string }) => validInput(d))
   .handler(async ({ context, data }) => {
     const sql = await sqlOf();
     await requireWrite(sql, context.userId, "settings");
@@ -121,7 +122,7 @@ export const addStaffUser = createServerFn({ method: "POST" })
 
 export const updateStaffUser = createServerFn({ method: "POST" })
   .middleware([authMiddleware])
-  .validator((d: { id: number; displayName: string; role: Role; code: string }) => d)
+  .validator((d: { id: number; displayName: string; role: Role; code: string }) => validInput(d))
   .handler(async ({ context, data }) => {
     const sql = await sqlOf();
     await requireWrite(sql, context.userId, "settings");
@@ -147,7 +148,7 @@ export const updateStaffUser = createServerFn({ method: "POST" })
 
 export const deleteStaffUser = createServerFn({ method: "POST" })
   .middleware([authMiddleware])
-  .validator((d: { id: number }) => d)
+  .validator((d: { id: number }) => validInput(d))
   .handler(async ({ context, data }) => {
     const sql = await sqlOf();
     await requireWrite(sql, context.userId, "settings");
@@ -171,7 +172,7 @@ export const exportWorkspace = createServerFn({ method: "POST" })
 
 export const importWorkspace = createServerFn({ method: "POST" })
   .middleware([authMiddleware])
-  .validator((d: { payload: string; code: string; confirm?: string }) => d)
+  .validator((d: { payload: string; code: string; confirm?: string }) => validInput(d))
   .handler(async ({ context, data }) => {
     const sql = await sqlOf();
     await requireWrite(sql, context.userId, "settings");
@@ -182,7 +183,7 @@ export const importWorkspace = createServerFn({ method: "POST" })
 
 export const saveOnlineBackup = createServerFn({ method: "POST" })
   .middleware([authMiddleware])
-  .validator((d: { label?: string }) => d)
+  .validator((d: { label?: string }) => validInput(d))
   .handler(async ({ context, data }) => {
     const sql = await sqlOf();
     await requireWrite(sql, context.userId, "settings");
@@ -217,7 +218,7 @@ export const listOnlineBackups = createServerFn({ method: "GET" })
 
 export const restoreOnlineBackup = createServerFn({ method: "POST" })
   .middleware([authMiddleware])
-  .validator((d: { id: number; code: string; confirm?: string }) => d)
+  .validator((d: { id: number; code: string; confirm?: string }) => validInput(d))
   .handler(async ({ context, data }) => {
     const sql = await sqlOf();
     await requireWrite(sql, context.userId, "settings");
@@ -232,7 +233,7 @@ export const restoreOnlineBackup = createServerFn({ method: "POST" })
 
 export const deleteOnlineBackup = createServerFn({ method: "POST" })
   .middleware([authMiddleware])
-  .validator((d: { id: number }) => d)
+  .validator((d: { id: number }) => validInput(d))
   .handler(async ({ context, data }) => {
     const sql = await sqlOf();
     await requireWrite(sql, context.userId, "settings");
@@ -242,7 +243,7 @@ export const deleteOnlineBackup = createServerFn({ method: "POST" })
 
 export const saveCloudBackup = createServerFn({ method: "POST" })
   .middleware([authMiddleware])
-  .validator((d: { label?: string; kind?: "manual" | "auto" }) => d)
+  .validator((d: { label?: string; kind?: "manual" | "auto" }) => validInput(d))
   .handler(async ({ context, data }) => {
     const sql = await sqlOf();
     await requireWrite(sql, context.userId, "settings");
@@ -277,7 +278,7 @@ export const listCloudBackups = createServerFn({ method: "GET" })
 
 export const restoreCloudBackup = createServerFn({ method: "POST" })
   .middleware([authMiddleware])
-  .validator((d: { id: number; code: string; confirm?: string }) => d)
+  .validator((d: { id: number; code: string; confirm?: string }) => validInput(d))
   .handler(async ({ context, data }) => {
     const sql = await sqlOf();
     await requireWrite(sql, context.userId, "settings");
@@ -292,7 +293,7 @@ export const restoreCloudBackup = createServerFn({ method: "POST" })
 
 export const deleteCloudBackup = createServerFn({ method: "POST" })
   .middleware([authMiddleware])
-  .validator((d: { id: number; code: string }) => d)
+  .validator((d: { id: number; code: string }) => validInput(d))
   .handler(async ({ context, data }) => {
     const sql = await sqlOf();
     await requireWrite(sql, context.userId, "settings");
@@ -330,7 +331,7 @@ export async function resetWorkspaceTx(tx: Sql, userId: string): Promise<{ snaps
 
 export const resetWorkspaceData = createServerFn({ method: "POST" })
   .middleware([authMiddleware])
-  .validator((d: { code: string }) => d)
+  .validator((d: { code: string }) => validInput(d))
   .handler(async ({ context, data }) => {
     const sql = await sqlOf();
     await requireWrite(sql, context.userId, "settings");

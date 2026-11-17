@@ -18,6 +18,7 @@ import {
 } from "./helpers";
 import { assertOwned } from "./ownership";
 import { idempotent } from "./idempotency";
+import { validInput } from "./validate";
 
 type PurchaseIn = {
   id?: number;
@@ -355,7 +356,7 @@ export async function savePurchaseInvoiceTx(sql: Sql, userId: string, data: Purc
 
 export const savePurchaseInvoice = createServerFn({ method: "POST" })
   .middleware([authMiddleware])
-  .validator((d: PurchaseIn) => d)
+  .validator((d: PurchaseIn) => validInput(d))
   .handler(async ({ context, data }) =>
     // STR-04: a replayed offline save returns its first result.
     idempotent(context.userId, async () => {
@@ -456,7 +457,7 @@ export async function deletePurchaseInvoiceTx(tx: Sql, userId: string, id: numbe
 
 export const deletePurchaseInvoice = createServerFn({ method: "POST" })
   .middleware([authMiddleware])
-  .validator((d: { id: number }) => d)
+  .validator((d: { id: number }) => validInput(d))
   .handler(async ({ context, data }) => {
     await guard(context.userId, "purchase");
     await withTransaction((tx) => deletePurchaseInvoiceTx(tx, context.userId, data.id));
@@ -548,7 +549,7 @@ export async function receivePurchaseInvoiceTx(sql: Sql, userId: string, data: R
 
 export const receivePurchaseInvoice = createServerFn({ method: "POST" })
   .middleware([authMiddleware])
-  .validator((d: ReceiveIn) => d)
+  .validator((d: ReceiveIn) => validInput(d))
   .handler(async ({ context, data }) =>
     // STR-04: a replayed offline save returns its first result.
     idempotent(context.userId, async () => {
@@ -649,7 +650,7 @@ export const saveSaleInvoice = createServerFn({ method: "POST" })
       refundAccountId?: number | null;
       cashPaymentIds?: number[];
       lines: LineIn[];
-    }) => d,
+    }) => validInput(d),
   )
   .handler(async ({ context, data }) =>
     // STR-04: a replayed offline save returns its first result.
@@ -862,7 +863,7 @@ export const saveSaleInvoice = createServerFn({ method: "POST" })
 
 export const deleteSaleInvoice = createServerFn({ method: "POST" })
   .middleware([authMiddleware])
-  .validator((d: { id: number }) => d)
+  .validator((d: { id: number }) => validInput(d))
   .handler(async ({ context, data }) => {
     await guard(context.userId, "sales");
     await withTransaction(async (tx) => {
@@ -876,7 +877,7 @@ export const deleteSaleInvoice = createServerFn({ method: "POST" })
 
 export const listCustomerCashTakes = createServerFn({ method: "POST" })
   .middleware([authMiddleware])
-  .validator((d: { customerId: number; invoiceId?: number | null }) => d)
+  .validator((d: { customerId: number; invoiceId?: number | null }) => validInput(d))
   .handler(async ({ context, data }) => {
     const sql = await sqlOf();
     await requireProfile(sql, context.userId);

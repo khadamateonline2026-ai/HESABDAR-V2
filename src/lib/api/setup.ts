@@ -13,6 +13,7 @@ import {
 } from "./party-history";
 import { guard, requireWriteAny, rethrow, sqlOf, assertUniqueItemName, syncSalariedWorker, assertAccountantPin } from "./helpers";
 import { assertOwned } from "./ownership";
+import { validInput } from "./validate";
 
 const WAGE_OVERHEAD_TITLE = "نرخ دستمزد";
 const WAGE_OVERHEAD_PREFIX = "نرخ دستمزد — ";
@@ -57,7 +58,7 @@ async function syncWageLinkedOverheads(sql: Sql, userId: string) {
 
 export const saveCurrency = createServerFn({ method: "POST" })
   .middleware([authMiddleware])
-  .validator((d: { id?: number; name: string; symbol: string; rateToBase: number }) => d)
+  .validator((d: { id?: number; name: string; symbol: string; rateToBase: number }) => validInput(d))
   .handler(async ({ context, data }) => {
     const { sql } = await guard(context.userId, "currencies");
     try {
@@ -81,7 +82,7 @@ export const saveCurrency = createServerFn({ method: "POST" })
 
 export const deleteCurrency = createServerFn({ method: "POST" })
   .middleware([authMiddleware])
-  .validator((d: { id: number }) => d)
+  .validator((d: { id: number }) => validInput(d))
   .handler(async ({ context, data }) => {
     const { sql } = await guard(context.userId, "currencies");
     await sql`delete from currencies where id = ${data.id} and user_id = ${context.userId}`;
@@ -90,7 +91,7 @@ export const deleteCurrency = createServerFn({ method: "POST" })
 
 export const saveUnit = createServerFn({ method: "POST" })
   .middleware([authMiddleware])
-  .validator((d: { id?: number; name: string }) => d)
+  .validator((d: { id?: number; name: string }) => validInput(d))
   .handler(async ({ context, data }) => {
     const sql = await sqlOf();
     await requireWriteAny(sql, context.userId, ["units", "purchase", "sales"]);
@@ -110,7 +111,7 @@ export const saveUnit = createServerFn({ method: "POST" })
 
 export const deleteUnit = createServerFn({ method: "POST" })
   .middleware([authMiddleware])
-  .validator((d: { id: number }) => d)
+  .validator((d: { id: number }) => validInput(d))
   .handler(async ({ context, data }) => {
     const { sql } = await guard(context.userId, "units");
     await sql`delete from units where id = ${data.id} and user_id = ${context.userId}`;
@@ -119,7 +120,7 @@ export const deleteUnit = createServerFn({ method: "POST" })
 
 export const saveJobType = createServerFn({ method: "POST" })
   .middleware([authMiddleware])
-  .validator((d: { id?: number; name: string }) => d)
+  .validator((d: { id?: number; name: string }) => validInput(d))
   .handler(async ({ context, data }) => {
     const { sql } = await guard(context.userId, "jobs");
     try {
@@ -138,7 +139,7 @@ export const saveJobType = createServerFn({ method: "POST" })
 
 export const deleteJobType = createServerFn({ method: "POST" })
   .middleware([authMiddleware])
-  .validator((d: { id: number }) => d)
+  .validator((d: { id: number }) => validInput(d))
   .handler(async ({ context, data }) => {
     const { sql } = await guard(context.userId, "jobs");
     await sql`delete from job_types where id = ${data.id} and user_id = ${context.userId}`;
@@ -147,7 +148,7 @@ export const deleteJobType = createServerFn({ method: "POST" })
 
 export const saveProductionStage = createServerFn({ method: "POST" })
   .middleware([authMiddleware])
-  .validator((d: { id?: number; name: string }) => d)
+  .validator((d: { id?: number; name: string }) => validInput(d))
   .handler(async ({ context, data }) => {
     const { sql } = await guard(context.userId, "jobs");
     const name = data.name.trim();
@@ -177,7 +178,7 @@ export const saveProductionStage = createServerFn({ method: "POST" })
 
 export const deleteProductionStage = createServerFn({ method: "POST" })
   .middleware([authMiddleware])
-  .validator((d: { id: number }) => d)
+  .validator((d: { id: number }) => validInput(d))
   .handler(async ({ context, data }) => {
     const { sql } = await guard(context.userId, "jobs");
     await sql`delete from production_stages where id = ${data.id} and user_id = ${context.userId}`;
@@ -216,7 +217,7 @@ export const saveWageRate = createServerFn({ method: "POST" })
       wagePerUnit: number;
       registeredAt: string;
       notes: string;
-    }) => d,
+    }) => validInput(d),
   )
   .handler(async ({ context, data }) => {
     const { sql } = await guard(context.userId, "wages");
@@ -242,7 +243,7 @@ export const saveWageRate = createServerFn({ method: "POST" })
 
 export const deleteWageRate = createServerFn({ method: "POST" })
   .middleware([authMiddleware])
-  .validator((d: { id: number }) => d)
+  .validator((d: { id: number }) => validInput(d))
   .handler(async ({ context, data }) => {
     const { sql } = await guard(context.userId, "wages");
     await sql`delete from wage_rates where id = ${data.id} and user_id = ${context.userId}`;
@@ -252,7 +253,7 @@ export const deleteWageRate = createServerFn({ method: "POST" })
 
 export const savePartyCategory = createServerFn({ method: "POST" })
   .middleware([authMiddleware])
-  .validator((d: { id?: number; kind: "customer" | "vendor" | "other" | "worker"; name: string }) => d)
+  .validator((d: { id?: number; kind: "customer" | "vendor" | "other" | "worker"; name: string }) => validInput(d))
   .handler(async ({ context, data }) => {
     const { sql } = await guard(context.userId, data.kind === "worker" ? "workers" : "parties");
     if (data.id) {
@@ -272,7 +273,7 @@ export const savePartyCategory = createServerFn({ method: "POST" })
 
 export const deletePartyCategory = createServerFn({ method: "POST" })
   .middleware([authMiddleware])
-  .validator((d: { id: number }) => d)
+  .validator((d: { id: number }) => validInput(d))
   .handler(async ({ context, data }) => {
     const sql = await sqlOf();
     const row = await sql<{ kind: string }>`
@@ -300,7 +301,7 @@ export const saveParty = createServerFn({ method: "POST" })
       stageId?: number | null;
       employment?: "contract" | "salaried";
       salary?: number;
-    }) => d,
+    }) => validInput(d),
   )
   .handler(async ({ context, data }) => {
     // SEC-07: an existing contact's permission comes from its STORED kind; the
@@ -355,7 +356,7 @@ export const saveParty = createServerFn({ method: "POST" })
 
 export const deleteParty = createServerFn({ method: "POST" })
   .middleware([authMiddleware])
-  .validator((d: { id: number; kind: "customer" | "vendor" | "worker" | "other" }) => d)
+  .validator((d: { id: number; kind: "customer" | "vendor" | "worker" | "other" }) => validInput(d))
   .handler(async ({ context, data }) => {
     // SEC-07: permission from the stored kind (the client's `kind` is ignored),
     // and a contact with financial history is never deleted.
@@ -375,7 +376,7 @@ export const deleteParty = createServerFn({ method: "POST" })
 
 export const saveItemCategory = createServerFn({ method: "POST" })
   .middleware([authMiddleware])
-  .validator((d: { id?: number; name: string; kind: "product" | "raw" }) => d)
+  .validator((d: { id?: number; name: string; kind: "product" | "raw" }) => validInput(d))
   .handler(async ({ context, data }) => {
     const sql = await sqlOf();
     await requireWriteAny(sql, context.userId, ["purchase", "warehouses"]);
@@ -399,7 +400,7 @@ export const saveItemCategory = createServerFn({ method: "POST" })
 
 export const deleteItemCategory = createServerFn({ method: "POST" })
   .middleware([authMiddleware])
-  .validator((d: { id: number }) => d)
+  .validator((d: { id: number }) => validInput(d))
   .handler(async ({ context, data }) => {
     const sql = await sqlOf();
     await requireWriteAny(sql, context.userId, ["purchase", "warehouses"]);
@@ -409,7 +410,7 @@ export const deleteItemCategory = createServerFn({ method: "POST" })
 
 export const saveItemType = createServerFn({ method: "POST" })
   .middleware([authMiddleware])
-  .validator((d: { name: string }) => d)
+  .validator((d: { name: string }) => validInput(d))
   .handler(async ({ context, data }) => {
     const { sql } = await guard(context.userId, "purchase");
     const rows = await sql<{ id: number }>`
@@ -432,7 +433,7 @@ export const saveItem = createServerFn({ method: "POST" })
       minQty?: number;
       salePrice?: number;
       purchasePrice?: number;
-    }) => d,
+    }) => validInput(d),
   )
   .handler(async ({ context, data }) => {
     const sql = await sqlOf();
@@ -483,7 +484,7 @@ export const saveItem = createServerFn({ method: "POST" })
 
 export const saveWarehouse = createServerFn({ method: "POST" })
   .middleware([authMiddleware])
-  .validator((d: { name: string }) => d)
+  .validator((d: { name: string }) => validInput(d))
   .handler(async ({ context, data }) => {
     const sql = await sqlOf();
     await requireWriteAny(sql, context.userId, ["opening", "purchase", "warehouses"]);
@@ -502,7 +503,7 @@ export const saveWarehouse = createServerFn({ method: "POST" })
 
 export const updateWarehouse = createServerFn({ method: "POST" })
   .middleware([authMiddleware])
-  .validator((d: { id: number; name: string }) => d)
+  .validator((d: { id: number; name: string }) => validInput(d))
   .handler(async ({ context, data }) => {
     const sql = await sqlOf();
     await requireWriteAny(sql, context.userId, ["opening", "purchase", "warehouses"]);
@@ -533,7 +534,7 @@ export const updateWarehouse = createServerFn({ method: "POST" })
 
 export const deleteWarehouse = createServerFn({ method: "POST" })
   .middleware([authMiddleware])
-  .validator((d: { id: number }) => d)
+  .validator((d: { id: number }) => validInput(d))
   .handler(async ({ context, data }) => {
     const sql = await sqlOf();
     await requireWriteAny(sql, context.userId, ["opening", "purchase", "warehouses"]);
@@ -554,7 +555,7 @@ export const deleteWarehouse = createServerFn({ method: "POST" })
 
 export const saveProductionEnabled = createServerFn({ method: "POST" })
   .middleware([authMiddleware])
-  .validator((d: { enabled: boolean; code: string }) => d)
+  .validator((d: { enabled: boolean; code: string }) => validInput(d))
   .handler(async ({ context, data }) => {
     const sql = await sqlOf();
     await requireWriteAny(sql, context.userId, ["settings"]);
@@ -569,7 +570,7 @@ export const saveProductionEnabled = createServerFn({ method: "POST" })
 
 export const saveProductionOverhead = createServerFn({ method: "POST" })
   .middleware([authMiddleware])
-  .validator((d: { id?: number; title: string; amount: number }) => d)
+  .validator((d: { id?: number; title: string; amount: number }) => validInput(d))
   .handler(async ({ context, data }) => {
     const { sql } = await guard(context.userId, "units");
     const title = data.title.trim();
@@ -598,7 +599,7 @@ export const saveProductionOverhead = createServerFn({ method: "POST" })
 
 export const deleteProductionOverhead = createServerFn({ method: "POST" })
   .middleware([authMiddleware])
-  .validator((d: { id: number }) => d)
+  .validator((d: { id: number }) => validInput(d))
   .handler(async ({ context, data }) => {
     const { sql } = await guard(context.userId, "units");
     await sql`delete from production_overhead_types where id = ${data.id} and user_id = ${context.userId}`;

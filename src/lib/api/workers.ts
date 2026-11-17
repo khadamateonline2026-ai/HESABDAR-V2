@@ -7,6 +7,7 @@ import { planDeliveryQtyChange, type PlanDelivery, type PlanOrder } from "@/lib/
 import { assertCashAvailable, guard, loadInventoryState, lockStock, mapParty, sqlOf, wageForProduct, assertAccountantPin } from "./helpers";
 import { loadRecurringDues } from "./ops";
 import { assertOwned } from "./ownership";
+import { validInput } from "./validate";
 
 export const getWorkerLedger = createServerFn({ method: "GET" })
   .middleware([authMiddleware])
@@ -220,7 +221,7 @@ export const saveWorkerPayment = createServerFn({ method: "POST" })
       accountId?: number | null;
       /** ACC-06: payment currency; omitted = base currency (؋). */
       currencyId?: number | null;
-    }) => d,
+    }) => validInput(d),
   )
   .handler(async ({ context, data }) => {
     const { sql } = await guard(context.userId, "workers");
@@ -516,7 +517,7 @@ export const updateWorkerDelivery = createServerFn({ method: "POST" })
       quantity: number;
       occurredOn: string;
       toWorkerId?: number | null;
-    }) => d,
+    }) => validInput(d),
   )
   .handler(async ({ context, data }) => {
     await guard(context.userId, "workers");
@@ -592,7 +593,7 @@ async function reassignDeliveryWorker(
 
 export const deleteWorkerDelivery = createServerFn({ method: "POST" })
   .middleware([authMiddleware])
-  .validator((d: { id: number }) => d)
+  .validator((d: { id: number }) => validInput(d))
   .handler(async ({ context, data }) => {
     await guard(context.userId, "workers");
     // STR-03: the whole delivery plan is applied in one transaction.
@@ -611,7 +612,7 @@ export const deleteWorkerDelivery = createServerFn({ method: "POST" })
 
 export const deleteWorkerPayment = createServerFn({ method: "POST" })
   .middleware([authMiddleware])
-  .validator((d: { id: number }) => d)
+  .validator((d: { id: number }) => validInput(d))
   .handler(async ({ context, data }) => {
     const { sql } = await guard(context.userId, "workers");
     const rows = await sql<{ id: number; worker_id: number }>`
@@ -630,7 +631,7 @@ export const deleteWorkerPayment = createServerFn({ method: "POST" })
 
 export const resetWorkerAccounts = createServerFn({ method: "POST" })
   .middleware([authMiddleware])
-  .validator((d: { code: string; workerIds: number[] }) => d)
+  .validator((d: { code: string; workerIds: number[] }) => validInput(d))
   .handler(async ({ context, data }) => {
     const { sql } = await guard(context.userId, "workers");
     await assertAccountantPin(sql, context.userId, data.code);

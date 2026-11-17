@@ -9,6 +9,7 @@ import {
   type BackupSnapshot,
 } from "@/lib/backup-snapshot";
 import { requireWrite, sqlOf } from "./helpers";
+import { validInput } from "./validate";
 
 export type DriveUploadReport = {
   attempted: boolean;
@@ -219,7 +220,7 @@ export const probeGoogleDrive = createServerFn({ method: "POST" })
 
 export const runCloudBackup = createServerFn({ method: "POST" })
   .middleware([authMiddleware])
-  .validator((d: { kind: CloudBackupKind }) => d)
+  .validator((d: { kind: CloudBackupKind }) => validInput(d))
   .handler(async ({ context, data }): Promise<DriveUploadReport> => {
     const sql = await sqlOf();
     await requireWrite(sql, context.userId, "settings");

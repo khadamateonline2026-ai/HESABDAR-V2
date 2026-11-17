@@ -8,6 +8,7 @@ import { loadInventoryState, lockStock, requireWriteAny, sqlOf, assertUniqueItem
 import { encodeUsageError, type UsageFocus } from "@/lib/usage-focus";
 import { assertOwned } from "./ownership";
 import { idempotent } from "./idempotency";
+import { validInput } from "./validate";
 
 async function snapshotWage(
   sql: Awaited<ReturnType<typeof sqlOf>>,
@@ -89,7 +90,7 @@ export const saveCatalogItem = createServerFn({ method: "POST" })
       notes?: string;
       bom?: { rawItemId: number; quantity: number }[];
       overheads?: { title: string; amount: number }[];
-    }) => d,
+    }) => validInput(d),
   )
   .handler(async ({ context, data }) =>
     // STR-04: a replayed offline save returns its first result.
@@ -291,7 +292,7 @@ async function findItemUsage(
 
 export const deleteCatalogItem = createServerFn({ method: "POST" })
   .middleware([authMiddleware])
-  .validator((d: { id: number }) => d)
+  .validator((d: { id: number }) => validInput(d))
   .handler(async ({ context, data }) => {
     const sql = await sqlOf();
     await requireWriteAny(sql, context.userId, ["warehouses"]);
@@ -308,7 +309,7 @@ export const deleteCatalogItem = createServerFn({ method: "POST" })
 
 export const patchItemImage = createServerFn({ method: "POST" })
   .middleware([authMiddleware])
-  .validator((d: { id: number; image: string | null }) => d)
+  .validator((d: { id: number; image: string | null }) => validInput(d))
   .handler(async ({ context, data }) => {
     const sql = await sqlOf();
     await requireWriteAny(sql, context.userId, ["warehouses", "purchase", "sales"]);
@@ -381,7 +382,7 @@ async function workerStageId(
 export const createWorkOrder = createServerFn({ method: "POST" })
   .middleware([authMiddleware])
   .validator(
-    (d: { workerId: number | null; productId: number; quantity: number; occurredOn: string; notes: string; invoiceNo?: string }) => d,
+    (d: { workerId: number | null; productId: number; quantity: number; occurredOn: string; notes: string; invoiceNo?: string }) => validInput(d),
   )
   .handler(async ({ context, data }) => {
     const sql = await sqlOf();
@@ -457,7 +458,7 @@ export const createWorkOrder = createServerFn({ method: "POST" })
 
 export const listPriorProductGivers = createServerFn({ method: "POST" })
   .middleware([authMiddleware])
-  .validator((d: { workerId: number; productId: number }) => d)
+  .validator((d: { workerId: number; productId: number }) => validInput(d))
   .handler(async ({ context, data }): Promise<number[]> => {
     const sql = await sqlOf();
     await assertOwned(sql, context.userId, [["items", data.productId], ["parties", data.workerId]]);
@@ -484,7 +485,7 @@ export const deliverWorkOrder = createServerFn({ method: "POST" })
       toWorkerId?: number | null;
       toWarehouse?: boolean;
       invoiceNo?: string;
-    }) => d,
+    }) => validInput(d),
   )
   .handler(async ({ context, data }) => {
     const sql = await sqlOf();
@@ -644,7 +645,7 @@ export const updateWorkOrder = createServerFn({ method: "POST" })
       occurredOn: string;
       notes: string;
       invoiceNo?: string;
-    }) => d,
+    }) => validInput(d),
   )
   .handler(async ({ context, data }) => {
     const sql = await sqlOf();
@@ -745,7 +746,7 @@ export const updateWorkOrder = createServerFn({ method: "POST" })
 
 export const deleteWorkOrder = createServerFn({ method: "POST" })
   .middleware([authMiddleware])
-  .validator((d: { id: number }) => d)
+  .validator((d: { id: number }) => validInput(d))
   .handler(async ({ context, data }) => {
     const sql = await sqlOf();
     await requireWriteAny(sql, context.userId, ["warehouses", "workers"]);
@@ -774,7 +775,7 @@ export const deleteWorkOrder = createServerFn({ method: "POST" })
 
 export const resetWorkerMaterials = createServerFn({ method: "POST" })
   .middleware([authMiddleware])
-  .validator((d: { code: string }) => d)
+  .validator((d: { code: string }) => validInput(d))
   .handler(async ({ context, data }) => {
     const sql = await sqlOf();
     await requireWriteAny(sql, context.userId, ["warehouses", "workers"]);

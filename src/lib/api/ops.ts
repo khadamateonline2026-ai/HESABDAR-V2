@@ -7,6 +7,7 @@ import { withTransaction, type Sql } from "@/lib/db";
 import { docStatusOf, guard, invoiceOf, itemKindOf, loadCatalogs, sqlOf, assertAccountantPin } from "./helpers";
 import { assertOwned } from "./ownership";
 import { idempotent } from "./idempotency";
+import { validInput, validPositive } from "./validate";
 
 async function settleExpenseAccount(
   sql: Sql,
@@ -111,7 +112,7 @@ export const savePurchase = createServerFn({ method: "POST" })
       warehouseName: string;
       occurredOn: string;
       notes: string;
-    }) => d,
+    }) => validInput(d),
   )
   .handler(async ({ context, data }) =>
     // STR-04: a replayed offline save returns its first result.
@@ -157,7 +158,7 @@ export const savePurchase = createServerFn({ method: "POST" })
 
 export const deletePurchase = createServerFn({ method: "POST" })
   .middleware([authMiddleware])
-  .validator((d: { id: number }) => d)
+  .validator((d: { id: number }) => validInput(d))
   .handler(async ({ context, data }) => {
     const { sql } = await guard(context.userId, "purchase");
     await sql`delete from purchases where id = ${data.id} and user_id = ${context.userId}`;
@@ -220,7 +221,7 @@ export const saveSale = createServerFn({ method: "POST" })
       accountId: number | null;
       occurredOn: string;
       notes: string;
-    }) => d,
+    }) => validInput(d),
   )
   .handler(async ({ context, data }) =>
     // STR-04: a replayed offline save returns its first result.
@@ -264,7 +265,7 @@ export const saveSale = createServerFn({ method: "POST" })
 
 export const deleteSale = createServerFn({ method: "POST" })
   .middleware([authMiddleware])
-  .validator((d: { id: number }) => d)
+  .validator((d: { id: number }) => validInput(d))
   .handler(async ({ context, data }) => {
     const { sql } = await guard(context.userId, "sales");
     await sql`delete from sales where id = ${data.id} and user_id = ${context.userId}`;
@@ -317,7 +318,7 @@ export const saveExpense = createServerFn({ method: "POST" })
       notes: string;
       categoryId?: number | null;
       partyId?: number | null;
-    }) => d,
+    }) => validPositive(d, "amount"),
   )
   .handler(async ({ context, data }) => {
     const { sql } = await guard(context.userId, "expenses");
@@ -360,7 +361,7 @@ export const saveExpense = createServerFn({ method: "POST" })
 
 export const deleteExpense = createServerFn({ method: "POST" })
   .middleware([authMiddleware])
-  .validator((d: { id: number }) => d)
+  .validator((d: { id: number }) => validInput(d))
   .handler(async ({ context, data }) => {
     const { sql } = await guard(context.userId, "expenses");
     await sql`delete from expenses where id = ${data.id} and user_id = ${context.userId}`;
@@ -369,7 +370,7 @@ export const deleteExpense = createServerFn({ method: "POST" })
 
 export const resetExpenseHistory = createServerFn({ method: "POST" })
   .middleware([authMiddleware])
-  .validator((d: { code: string }) => d)
+  .validator((d: { code: string }) => validInput(d))
   .handler(async ({ context, data }) => {
     const { sql } = await guard(context.userId, "expenses");
     await assertAccountantPin(sql, context.userId, data.code);
@@ -513,7 +514,7 @@ export const listExpenseCategories = createServerFn({ method: "GET" })
 
 export const saveExpenseCategory = createServerFn({ method: "POST" })
   .middleware([authMiddleware])
-  .validator((d: { id?: number; name: string; kind: "misc" | "recurring" }) => d)
+  .validator((d: { id?: number; name: string; kind: "misc" | "recurring" }) => validInput(d))
   .handler(async ({ context, data }) => {
     const { sql } = await guard(context.userId, "expenses");
     const name = data.name.trim();
@@ -536,7 +537,7 @@ export const saveExpenseCategory = createServerFn({ method: "POST" })
 
 export const deleteExpenseCategory = createServerFn({ method: "POST" })
   .middleware([authMiddleware])
-  .validator((d: { id: number }) => d)
+  .validator((d: { id: number }) => validInput(d))
   .handler(async ({ context, data }) => {
     const { sql } = await guard(context.userId, "expenses");
     await sql`delete from expense_categories where id = ${data.id} and user_id = ${context.userId}`;
@@ -592,7 +593,7 @@ export const saveRecurringExpense = createServerFn({ method: "POST" })
       notes: string;
       accountId?: number | null;
       partyId?: number | null;
-    }) => d,
+    }) => validPositive(d, "amount"),
   )
   .handler(async ({ context, data }) => {
     const { sql } = await guard(context.userId, "expenses");
@@ -634,7 +635,7 @@ export const saveRecurringExpense = createServerFn({ method: "POST" })
 
 export const deleteRecurringExpense = createServerFn({ method: "POST" })
   .middleware([authMiddleware])
-  .validator((d: { id: number }) => d)
+  .validator((d: { id: number }) => validInput(d))
   .handler(async ({ context, data }) => {
     const { sql } = await guard(context.userId, "expenses");
     await sql`delete from recurring_expenses where id = ${data.id} and user_id = ${context.userId}`;
@@ -650,7 +651,7 @@ export const listRecurringDues = createServerFn({ method: "GET" })
 
 export const setRecurringPeriodStatus = createServerFn({ method: "POST" })
   .middleware([authMiddleware])
-  .validator((d: { recurringId: number; period: string; status: "paid" | "unpaid" }) => d)
+  .validator((d: { recurringId: number; period: string; status: "paid" | "unpaid" }) => validInput(d))
   .handler(async ({ context, data }) => {
     await guard(context.userId, "expenses");
     // STR-03: the expense row and the period status change together; the recurring row is locked so a double click cannot create two expenses for one period.
