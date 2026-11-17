@@ -842,7 +842,7 @@ function ResetPanel() {
               await queryClient.invalidateQueries();
               setCode("");
               setOpen(false);
-              toast.success("اطلاعات آزمایشی پاک شد");
+              toast.success("اطلاعات آزمایشی پاک شد؛ نسخه قبلی در پشتیبان‌های آنلاین ذخیره شد");
             } catch (err) {
               toast.error(err instanceof Error ? err.message : "ریست ناکام شد");
             } finally {
@@ -850,7 +850,7 @@ function ResetPanel() {
             }
           }}
         >
-          <p className="text-sm leading-relaxed">برای تأیید، کد نقش حسابدار را وارد کنید. پشتیبان‌های آنلاین پاک نمی‌شوند.</p>
+          <p className="text-sm leading-relaxed">برای تأیید، کد نقش حسابدار را وارد کنید. پیش از پاک‌کردن، یک نسخه از داده‌های فعلی خودکار در پشتیبان‌های آنلاین ذخیره می‌شود و پشتیبان‌های آنلاین پاک نمی‌شوند.</p>
           <Field label="کد حسابدار">
             <Input dir="ltr" value={code} onChange={(e) => setCode(e.target.value)} required />
           </Field>

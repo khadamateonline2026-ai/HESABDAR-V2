@@ -313,8 +313,21 @@ export const deleteCloudBackup = createServerFn({ method: "POST" })
 
 const RESET_KEEP = new Set(["companies", "app_settings", "staff_users"]);
 
-/** STR-03: empties the workspace and re-seeds defaults; call inside a transaction. */
-export async function resetWorkspaceTx(tx: Sql, userId: string): Promise<void> {
+export const RESET_SNAPSHOT_PREFIX = "خودکار پیش از ریست";
+
+/**
+ * STR-03: empties the workspace and re-seeds defaults; call inside a transaction.
+ * First saves a full copy to the online backups (data_backups, kept by the
+ * reset) so the reset can be undone from Settings → Restore.
+ */
+export async function resetWorkspaceTx(tx: Sql, userId: string): Promise<{ snapshotId: number }> {
+  const before = await dumpWorkspace(tx, userId);
+  const label = `${RESET_SNAPSHOT_PREFIX} ${new Date().toISOString().slice(0, 16).replace("T", " ")}`;
+  const snap = await tx<{ id: number }>`
+    insert into data_backups (user_id, label, payload)
+    values (${userId}, ${label}, ${JSON.stringify(before)})
+    returning id
+  `;
   await muteActivityLog(tx, userId);
   for (const name of [...WORKSPACE_TABLES].reverse()) {
     if (RESET_KEEP.has(name)) continue;
@@ -322,6 +335,7 @@ export async function resetWorkspaceTx(tx: Sql, userId: string): Promise<void> {
   }
   await seedDefaults(tx, userId);
   await unmuteActivityLog(tx, userId);
+  return { snapshotId: snap[0].id };
 }
 
 export const resetWorkspaceData = createServerFn({ method: "POST" })
@@ -333,6 +347,6 @@ export const resetWorkspaceData = createServerFn({ method: "POST" })
     await assertAccountantPin(sql, context.userId, data.code);
     // STR-03: all-or-nothing — a failure half way must not leave a partly
     // emptied workspace (or a muted activity log).
-    await withTransaction((tx) => resetWorkspaceTx(tx, context.userId));
-    return { ok: true as const };
+    const { snapshotId } = await withTransaction((tx) => resetWorkspaceTx(tx, context.userId));
+    return { ok: true as const, snapshotId };
   });
