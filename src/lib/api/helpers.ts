@@ -4,7 +4,7 @@ import { canManageRoleCodes, canWrite, writeError, type Area } from "@/lib/permi
 import { isWarehouseBackupPayload } from "@/lib/warehouse-backup";
 import { assertRestoreConfirmed, buildManifest, validateWorkspaceBackup, type ValidBackup } from "@/lib/backup-validate";
 import { peekSessionRole } from "@/lib/session-role-slot";
-import { verifyPin } from "@/lib/auth/pin-hash";
+import { verifyAccountantPin, verifyRolePin } from "./role-pin";
 import {
   DEFAULT_SETTINGS,
   ITEM_KIND_LABEL,
@@ -523,18 +523,23 @@ export async function getRoleCodes(sql: Sql, userId: string): Promise<Record<Rol
   return settings.roleCodes;
 }
 
-export function assertRolePin(
-  codes: Record<Role, string>,
+/**
+ * SEC-03: role PIN check with the persistent DB limiter (see role-pin.ts).
+ * Call it outside any transaction so a failed attempt is always counted.
+ */
+export async function assertRolePin(
+  sql: Sql,
+  userId: string,
   role: Role,
   code: string,
   message = "کد نقش نادرست است",
-): void {
-  if (!verifyPin(code.trim(), codes[role] ?? "")) throw new Error(message);
+): Promise<void> {
+  await verifyRolePin(sql, userId, role, code, message);
 }
 
 /** Accountant PIN gate used by destructive/settings toggles (e.g. production module). */
-export function assertAccountantPin(codes: Record<Role, string>, code: string): void {
-  assertRolePin(codes, "accountant", code, "کد نقش حسابدار نادرست است");
+export async function assertAccountantPin(sql: Sql, userId: string, code: string): Promise<void> {
+  await verifyAccountantPin(sql, userId, code);
 }
 
 

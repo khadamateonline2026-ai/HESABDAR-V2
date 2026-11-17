@@ -1,11 +1,10 @@
-import { assertPinShape, hashPin, verifyPin } from "@/lib/auth/pin-hash";
-import { assertRoleNotLocked, recordRoleFail, recordRoleSuccess } from "@/lib/auth/role-rate-limit";
+import { assertPinShape, hashPin } from "@/lib/auth/pin-hash";
 import { createServerFn } from "@tanstack/react-start";
 import { withTransaction, type Sql } from "@/lib/db";
 import { authMiddleware } from "@/lib/auth/middleware";
 import { num, text } from "@/lib/format";
 import { type AppSettings, type ColorPreset, type Role } from "@/lib/types";
-import { dumpWorkspace, getRoleCodes, muteActivityLog, requireManageRoleCodes, requireProfile, requireWrite, restoreWorkspace, rethrow, seedDefaults, sqlOf, unmuteActivityLog, WORKSPACE_TABLES, assertAccountantPin, assertRolePin } from "./helpers";
+import { dumpWorkspace, muteActivityLog, requireManageRoleCodes, requireProfile, requireWrite, restoreWorkspace, rethrow, seedDefaults, sqlOf, unmuteActivityLog, WORKSPACE_TABLES, assertAccountantPin, assertRolePin } from "./helpers";
 
 export const saveAppearance = createServerFn({ method: "POST" })
   .middleware([authMiddleware])
@@ -100,13 +99,7 @@ export const addStaffUser = createServerFn({ method: "POST" })
     await requireWrite(sql, context.userId, "settings");
     const name = data.displayName.trim();
     if (!name) throw new Error("نام لازم است");
-    assertRoleNotLocked(context.userId);
-    const codes = await getRoleCodes(sql, context.userId);
-    if (!verifyPin(data.code.trim(), codes[data.role])) {
-      recordRoleFail(context.userId);
-      throw new Error("کد نقش نادرست است");
-    }
-    recordRoleSuccess(context.userId);
+    await assertRolePin(sql, context.userId, data.role, data.code);
     try {
       const rows = await sql<{ id: number }>`
         insert into staff_users (user_id, display_name, role, is_owner)
@@ -127,8 +120,7 @@ export const updateStaffUser = createServerFn({ method: "POST" })
     await requireWrite(sql, context.userId, "settings");
     const name = data.displayName.trim();
     if (!name) throw new Error("نام لازم است");
-    const codes = await getRoleCodes(sql, context.userId);
-    assertRolePin(codes, data.role, data.code);
+    await assertRolePin(sql, context.userId, data.role, data.code);
     const row = await sql<{ is_owner: boolean }>`
       select is_owner from staff_users where id = ${data.id} and user_id = ${context.userId}
     `;
@@ -176,8 +168,7 @@ export const importWorkspace = createServerFn({ method: "POST" })
   .handler(async ({ context, data }) => {
     const sql = await sqlOf();
     await requireWrite(sql, context.userId, "settings");
-    const codes = await getRoleCodes(sql, context.userId);
-    assertAccountantPin(codes, data.code);
+    await assertAccountantPin(sql, context.userId, data.code);
     await restoreWorkspace(sql, context.userId, data.payload, { confirm: data.confirm });
     return { ok: true as const };
   });
@@ -223,8 +214,7 @@ export const restoreOnlineBackup = createServerFn({ method: "POST" })
   .handler(async ({ context, data }) => {
     const sql = await sqlOf();
     await requireWrite(sql, context.userId, "settings");
-    const codes = await getRoleCodes(sql, context.userId);
-    assertAccountantPin(codes, data.code);
+    await assertAccountantPin(sql, context.userId, data.code);
     const rows = await sql<{ payload: string }>`
       select payload from data_backups where id = ${data.id} and user_id = ${context.userId}
     `;
@@ -290,8 +280,7 @@ export const restoreCloudBackup = createServerFn({ method: "POST" })
   .handler(async ({ context, data }) => {
     const sql = await sqlOf();
     await requireWrite(sql, context.userId, "settings");
-    const codes = await getRoleCodes(sql, context.userId);
-    assertAccountantPin(codes, data.code);
+    await assertAccountantPin(sql, context.userId, data.code);
     const rows = await sql<{ payload: string }>`
       select payload from cloud_backups where id = ${data.id} and user_id = ${context.userId}
     `;
@@ -306,8 +295,7 @@ export const deleteCloudBackup = createServerFn({ method: "POST" })
   .handler(async ({ context, data }) => {
     const sql = await sqlOf();
     await requireWrite(sql, context.userId, "settings");
-    const codes = await getRoleCodes(sql, context.userId);
-    assertAccountantPin(codes, data.code);
+    await assertAccountantPin(sql, context.userId, data.code);
     await sql`delete from cloud_backups where id = ${data.id} and user_id = ${context.userId}`;
     return { ok: true as const };
   });
@@ -331,8 +319,7 @@ export const resetWorkspaceData = createServerFn({ method: "POST" })
   .handler(async ({ context, data }) => {
     const sql = await sqlOf();
     await requireWrite(sql, context.userId, "settings");
-    const codes = await getRoleCodes(sql, context.userId);
-    assertAccountantPin(codes, data.code);
+    await assertAccountantPin(sql, context.userId, data.code);
     // STR-03: all-or-nothing — a failure half way must not leave a partly
     // emptied workspace (or a muted activity log).
     await withTransaction((tx) => resetWorkspaceTx(tx, context.userId));

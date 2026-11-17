@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { assertPinShape, hashPin, isHashedPin, verifyPin } from "./pin-hash.ts";
+import { assertPinShape, hashPin, isHashedPin, legacyPlainMatches, verifyPin } from "./pin-hash.ts";
 
 test("hashPin produces scrypt format and verifies", () => {
   const h = hashPin("1234");
@@ -10,9 +10,12 @@ test("hashPin produces scrypt format and verifies", () => {
   assert.notEqual(h, hashPin("1234")); // unique salt
 });
 
-test("legacy plaintext still verifies", () => {
-  assert.equal(verifyPin("abcd", "abcd"), true);
-  assert.equal(verifyPin("abcd", "abce"), false);
+test("SEC-03: plaintext stored PINs are no longer accepted by verifyPin", () => {
+  assert.equal(verifyPin("abcd", "abcd"), false);
+  // only the one-time upgrade path may compare plaintext
+  assert.equal(legacyPlainMatches("abcd", "abcd"), true);
+  assert.equal(legacyPlainMatches("abcd", "abce"), false);
+  assert.equal(legacyPlainMatches("1234", hashPin("1234")), false);
 });
 
 test("assertPinShape keeps min 4", () => {

@@ -4,7 +4,7 @@ import { authMiddleware } from "@/lib/auth/middleware";
 import { formatMoney, nextInvoiceNo, num, text, todayIso } from "@/lib/format";
 import type { Party, WorkerDeliveryLine, WorkerLedger, WorkerModelAgg, WorkerPayment } from "@/lib/types";
 import { planDeliveryQtyChange, type PlanDelivery, type PlanOrder } from "@/lib/worker-delivery-plan";
-import { assertCashAvailable, getRoleCodes, guard, loadInventoryState, mapParty, sqlOf, wageForProduct, assertAccountantPin } from "./helpers";
+import { assertCashAvailable, guard, loadInventoryState, mapParty, sqlOf, wageForProduct, assertAccountantPin } from "./helpers";
 import { loadRecurringDues } from "./ops";
 
 export const getWorkerLedger = createServerFn({ method: "GET" })
@@ -605,8 +605,7 @@ export const resetWorkerAccounts = createServerFn({ method: "POST" })
   .validator((d: { code: string; workerIds: number[] }) => d)
   .handler(async ({ context, data }) => {
     const { sql } = await guard(context.userId, "workers");
-    const codes = await getRoleCodes(sql, context.userId);
-    assertAccountantPin(codes, data.code);
+    await assertAccountantPin(sql, context.userId, data.code);
     const wanted = [...new Set(data.workerIds.filter((id) => Number.isFinite(id) && id > 0))];
     if (!wanted.length) throw new Error("کارگر را انتخاب کنید");
     const valid: number[] = [];

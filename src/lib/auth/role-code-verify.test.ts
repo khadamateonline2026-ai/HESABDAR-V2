@@ -39,13 +39,13 @@ test("onboarding hashed accountant PIN unlocks production-module toggle", () => 
   assert.equal(verifyPin(plain, codes.accountant), true);
 });
 
-test("legacy plaintext accountant PIN still accepted", () => {
+test("SEC-03: a plaintext stored accountant PIN is not accepted by verifyPin (upgrade happens in role-pin.ts)", () => {
   const codes: Record<Role, string> = {
     supervisor: "1111",
     accountant: "9999",
     seller: "3333",
   };
-  assert.doesNotThrow(() => assertAccountantPin(codes, "9999"));
+  assert.throws(() => assertAccountantPin(codes, "9999"), /حسابدار/);
   assert.throws(() => assertAccountantPin(codes, "0000"), /حسابدار/);
 });
 

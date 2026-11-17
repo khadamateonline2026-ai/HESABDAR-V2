@@ -11,7 +11,7 @@ import {
   storedPartyArea,
   type PartyKind,
 } from "./party-history";
-import { guard, requireWriteAny, rethrow, sqlOf, assertUniqueItemName, syncSalariedWorker, getRoleCodes, assertAccountantPin } from "./helpers";
+import { guard, requireWriteAny, rethrow, sqlOf, assertUniqueItemName, syncSalariedWorker, assertAccountantPin } from "./helpers";
 
 const WAGE_OVERHEAD_TITLE = "نرخ دستمزد";
 const WAGE_OVERHEAD_PREFIX = "نرخ دستمزد — ";
@@ -555,8 +555,7 @@ export const saveProductionEnabled = createServerFn({ method: "POST" })
   .handler(async ({ context, data }) => {
     const sql = await sqlOf();
     await requireWriteAny(sql, context.userId, ["settings"]);
-    const codes = await getRoleCodes(sql, context.userId);
-    assertAccountantPin(codes, data.code);
+    await assertAccountantPin(sql, context.userId, data.code);
     await sql.query(
       "alter table app_settings add column if not exists production_enabled boolean not null default true",
     );

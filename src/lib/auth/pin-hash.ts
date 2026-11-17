@@ -19,13 +19,9 @@ export function isHashedPin(value: string): boolean {
 
 export function verifyPin(pin: string, stored: string): boolean {
   if (!stored) return false;
-  if (!isHashedPin(stored)) {
-    // Legacy plaintext (should not exist in V2 new installs). Constant-time-ish compare.
-    const a = Buffer.from(pin);
-    const b = Buffer.from(stored);
-    if (a.length !== b.length) return false;
-    return timingSafeEqual(a, b);
-  }
+  // SEC-03: plaintext is never accepted here. Legacy plaintext PINs are
+  // upgraded once through `legacyPlainMatches` in `api/role-pin.ts`.
+  if (!isHashedPin(stored)) return false;
   const parts = stored.split("$");
   if (parts.length !== 6) return false;
   const n = Number(parts[1]);
@@ -39,6 +35,15 @@ export function verifyPin(pin: string, stored: string): boolean {
   const actual = scryptSync(pin, salt, expected.length, { N: n, r, p });
   if (actual.length !== expected.length) return false;
   return timingSafeEqual(actual, expected);
+}
+
+/** Constant-time compare for the one-time upgrade of a legacy plaintext PIN. */
+export function legacyPlainMatches(pin: string, stored: string): boolean {
+  if (!pin || !stored || isHashedPin(stored)) return false;
+  const a = Buffer.from(pin);
+  const b = Buffer.from(stored);
+  if (a.length !== b.length) return false;
+  return timingSafeEqual(a, b);
 }
 
 export function assertPinShape(pin: string): void {

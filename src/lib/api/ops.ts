@@ -4,7 +4,7 @@ import { convertAmount, num, text, todayIso } from "@/lib/format";
 import type { ExpenseCategory, RecurringCadence, RecurringDue, RecurringDueAnchor, RecurringExpense } from "@/lib/types";
 import { parseCadence, parseDueAnchor } from "@/lib/types";
 import { withTransaction, type Sql } from "@/lib/db";
-import { docStatusOf, getRoleCodes, guard, invoiceOf, itemKindOf, loadCatalogs, sqlOf, assertAccountantPin } from "./helpers";
+import { docStatusOf, guard, invoiceOf, itemKindOf, loadCatalogs, sqlOf, assertAccountantPin } from "./helpers";
 
 async function settleExpenseAccount(
   sql: Sql,
@@ -337,8 +337,7 @@ export const resetExpenseHistory = createServerFn({ method: "POST" })
   .validator((d: { code: string }) => d)
   .handler(async ({ context, data }) => {
     const { sql } = await guard(context.userId, "expenses");
-    const codes = await getRoleCodes(sql, context.userId);
-    assertAccountantPin(codes, data.code);
+    await assertAccountantPin(sql, context.userId, data.code);
     await sql`delete from expenses where user_id = ${context.userId}`;
     await sql`
       delete from recurring_periods
