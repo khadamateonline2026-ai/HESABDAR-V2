@@ -316,16 +316,68 @@ export const savePurchaseInvoice = createServerFn({ method: "POST" })
     }),
   );
 
+/**
+ * ACC-11: stock received on purchase lines must still be on hand before the
+ * lines are removed; otherwise goods already sold or used in production would
+ * lose their source and stock would go negative. Call inside the transaction,
+ * after lockStock.
+ */
+export async function assertReceiptsRemovable(
+  sql: Sql,
+  userId: string,
+  removed: { itemId: number | null; itemName: string; qty: number }[],
+): Promise<void> {
+  const byItem = new Map<string, { name: string; qty: number; itemId: number | null }>();
+  for (const r of removed) {
+    if (r.qty <= 1e-9) continue;
+    const k = r.itemId != null ? `id:${r.itemId}` : `name:${r.itemName}`;
+    const cur = byItem.get(k) ?? { name: r.itemName, qty: 0, itemId: r.itemId };
+    cur.qty += r.qty;
+    byItem.set(k, cur);
+  }
+  if (!byItem.size) return;
+  const inv = await loadInventoryState(sql, userId);
+  const short: string[] = [];
+  for (const it of byItem.values()) {
+    const card = inv.raw.find((c) => (it.itemId != null && c.itemId === it.itemId) || c.name === it.name);
+    const onHand = card?.qty ?? 0;
+    if (onHand + 1e-9 < it.qty) {
+      short.push(`${it.name} (رسیده ${formatMoney(it.qty)}، موجود ${formatMoney(onHand)})`);
+    }
+  }
+  if (short.length) {
+    throw new Error(
+      `کالای این خرید فروخته یا در تولید مصرف شده است؛ حذف آن موجودی را منفی می‌کند:\n${short.join("\n")}\nنخست فروش یا مصرف مربوط را اصلاح کنید.`,
+    );
+  }
+}
+
+/** ACC-11: delete a purchase invoice only when its received goods are still in stock. */
+export async function deletePurchaseInvoiceTx(tx: Sql, userId: string, id: number): Promise<void> {
+  await lockStock(tx, userId);
+  const lines = await tx<{ item_id: number | null; item_name: string; received_qty: unknown }>`
+    select item_id, item_name, received_qty from purchases where invoice_id = ${id} and user_id = ${userId}
+  `;
+  await assertReceiptsRemovable(
+    tx,
+    userId,
+    lines.map((l) => ({
+      itemId: l.item_id == null ? null : num(l.item_id),
+      itemName: text(l.item_name),
+      qty: l.received_qty == null ? 0 : num(l.received_qty),
+    })),
+  );
+  await tx`delete from purchases where invoice_id = ${id} and user_id = ${userId}`;
+  await tx`delete from party_payments where purchase_invoice_id = ${id} and user_id = ${userId}`;
+  await tx`delete from purchase_invoices where id = ${id} and user_id = ${userId}`;
+}
+
 export const deletePurchaseInvoice = createServerFn({ method: "POST" })
   .middleware([authMiddleware])
   .validator((d: { id: number }) => d)
   .handler(async ({ context, data }) => {
     await guard(context.userId, "purchase");
-    await withTransaction(async (tx) => {
-      await tx`delete from purchases where invoice_id = ${data.id} and user_id = ${context.userId}`;
-      await tx`delete from party_payments where purchase_invoice_id = ${data.id} and user_id = ${context.userId}`;
-      await tx`delete from purchase_invoices where id = ${data.id} and user_id = ${context.userId}`;
-    });
+    await withTransaction((tx) => deletePurchaseInvoiceTx(tx, context.userId, data.id));
     return { ok: true as const };
   });
 
