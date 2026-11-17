@@ -4,7 +4,7 @@ import { authMiddleware } from "@/lib/auth/middleware";
 import { formatMoney, nextInvoiceNo, num, text, todayIso } from "@/lib/format";
 import type { Party, WorkerDeliveryLine, WorkerLedger, WorkerModelAgg, WorkerPayment } from "@/lib/types";
 import { planDeliveryQtyChange, type PlanDelivery, type PlanOrder } from "@/lib/worker-delivery-plan";
-import { assertCashAvailable, guard, loadInventoryState, mapParty, sqlOf, wageForProduct, assertAccountantPin } from "./helpers";
+import { assertCashAvailable, guard, loadInventoryState, lockStock, mapParty, sqlOf, wageForProduct, assertAccountantPin } from "./helpers";
 import { loadRecurringDues } from "./ops";
 import { assertOwned } from "./ownership";
 
@@ -502,6 +502,8 @@ export const updateWorkerDelivery = createServerFn({ method: "POST" })
     if (data.quantity <= EPS) throw new Error("تعداد تحویل باید بزرگ‌تر از صفر باشد");
     // STR-03: quantity plan, date and worker change are one transaction (any later error undoes the earlier writes).
     return withTransaction(async (sql) => {
+      // ACC-08: stock lock first, before any check or row lock.
+      await lockStock(sql, context.userId);
       await assertOwned(sql, context.userId, [["parties", data.toWorkerId]]);
       const head = await loadDeliveryHead(sql, context.userId, data.id);
       if (!head) throw new Error("ردیف تحویل یافت نشد");
@@ -573,6 +575,8 @@ export const deleteWorkerDelivery = createServerFn({ method: "POST" })
     await guard(context.userId, "workers");
     // STR-03: the whole delivery plan is applied in one transaction.
     return withTransaction(async (sql) => {
+      // ACC-08: stock lock first, before any check or row lock.
+      await lockStock(sql, context.userId);
       const head = await loadDeliveryHead(sql, context.userId, data.id);
       if (!head) throw new Error("ردیف تحویل یافت نشد");
       await assertContractOrder(sql, context.userId, head.workerId);

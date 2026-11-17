@@ -4,7 +4,7 @@ import { authMiddleware } from "@/lib/auth/middleware";
 import { formatMoney, nextInvoiceNo, num, text } from "@/lib/format";
 import type { InventoryData, ProductionStage, WorkOrder } from "@/lib/types";
 import { isLastStage } from "@/lib/types";
-import { loadInventoryState, requireWriteAny, sqlOf, assertUniqueItemName, wageForProduct, assertAccountantPin } from "./helpers";
+import { loadInventoryState, lockStock, requireWriteAny, sqlOf, assertUniqueItemName, wageForProduct, assertAccountantPin } from "./helpers";
 import { encodeUsageError, type UsageFocus } from "@/lib/usage-focus";
 import { assertOwned } from "./ownership";
 import { idempotent } from "./idempotency";
@@ -403,6 +403,8 @@ export const createWorkOrder = createServerFn({ method: "POST" })
     }
     // STR-03: order, its root link and raw-material allocations are saved together.
     return withTransaction(async (sql) => {
+      // ACC-08: stock lock first, before any check or row lock.
+      await lockStock(sql, context.userId);
       const bom = await sql<{ raw_item_id: number; quantity: unknown; name: string }>`
         select b.raw_item_id, b.quantity, i.name
         from bom_lines b
@@ -491,6 +493,8 @@ export const deliverWorkOrder = createServerFn({ method: "POST" })
     if (data.quantity <= 0) throw new Error("تعداد تحویل باید بزرگ‌تر از صفر باشد");
     // STR-03: the delivery row, the child order and delivered_qty change together; the order row is locked so two deliveries cannot both pass the remaining-quantity check.
     return withTransaction(async (sql) => {
+      // ACC-08: stock lock first, before any check or row lock.
+      await lockStock(sql, context.userId);
       const order = await sql<{
         id: number;
         quantity: unknown;
@@ -647,92 +651,96 @@ export const updateWorkOrder = createServerFn({ method: "POST" })
     await requireWriteAny(sql, context.userId, ["warehouses", "workers"]);
     await assertOwned(sql, context.userId, [["items", data.productId], ["parties", data.workerId]]);
     if (data.quantity <= 0) throw new Error("تعداد سفارش باید بزرگ‌تر از صفر باشد");
-    const order = await sql<{
-      id: number;
-      product_id: number;
-      quantity: unknown;
-      delivered_qty: unknown;
-      root_id: number | null;
-    }>`
-      select id, product_id, quantity, delivered_qty, root_id
-      from work_orders where id = ${data.id} and user_id = ${context.userId}
-    `;
-    if (!order[0]) throw new Error("سفارش یافت نشد");
-    const delivered = num(order[0].delivered_qty);
-    if (data.quantity + 1e-9 < delivered) {
-      throw new Error(`تعداد نمی‌تواند از تحویل‌شده (${formatMoney(delivered)}) کمتر باشد`);
-    }
-    const productChanged = data.productId !== num(order[0].product_id);
-    if (productChanged && delivered > 1e-9) {
-      throw new Error("پس از تحویل نمی‌توان مدل کالا را عوض کرد");
-    }
-    const stageId = await workerStageId(sql, context.userId, data.workerId);
-    if (data.workerId != null) {
-      const w = await sql<{ employment: string | null }>`
-        select employment from parties where id = ${data.workerId} and user_id = ${context.userId}
+    // ACC-08: one transaction; the stock lock is taken before the raw-material check.
+    return withTransaction(async (sql) => {
+      await lockStock(sql, context.userId);
+      const order = await sql<{
+        id: number;
+        product_id: number;
+        quantity: unknown;
+        delivered_qty: unknown;
+        root_id: number | null;
+      }>`
+        select id, product_id, quantity, delivered_qty, root_id
+        from work_orders where id = ${data.id} and user_id = ${context.userId}
       `;
-      if (w[0] && text(w[0].employment) === "salaried") {
-        throw new Error("سفارش تولید فقط به کارگر کانتراتی داده می‌شود");
+      if (!order[0]) throw new Error("سفارش یافت نشد");
+      const delivered = num(order[0].delivered_qty);
+      if (data.quantity + 1e-9 < delivered) {
+        throw new Error(`تعداد نمی‌تواند از تحویل‌شده (${formatMoney(delivered)}) کمتر باشد`);
       }
-    }
-    const rootId = order[0].root_id;
-    const isRoot = rootId == null || num(rootId) === num(order[0].id);
-    const product = await sql<{ id: number; name: string; kind: string }>`
-      select id, name, kind from items where id = ${data.productId} and user_id = ${context.userId}
-    `;
-    if (!product[0] || product[0].kind !== "product") throw new Error("کالا یافت نشد");
-    if (isRoot) {
-      const bom = await sql<{ raw_item_id: number; quantity: unknown; name: string }>`
-        select b.raw_item_id, b.quantity, i.name
-        from bom_lines b
-        join items i on i.id = b.raw_item_id and i.user_id = b.user_id
-        where b.product_id = ${data.productId} and b.user_id = ${context.userId}
-      `;
-      if (!bom.length) throw new Error("فرمول مواد خام این کالا ثبت نشده است");
-      const oldAlloc = await sql<{ raw_item_id: number; allocated_qty: unknown }>`
-        select raw_item_id, allocated_qty from work_order_alloc
-        where work_order_id = ${data.id} and user_id = ${context.userId}
-      `;
-      const inv = await loadInventoryState(sql, context.userId);
-      const short: string[] = [];
-      for (const line of bom) {
-        const need = num(line.quantity) * data.quantity;
-        const prev = oldAlloc.find((a) => num(a.raw_item_id) === num(line.raw_item_id));
-        const released = num(prev?.allocated_qty);
-        const have = (inv.raw.find((r) => r.itemId === num(line.raw_item_id))?.qty ?? 0) + released;
-        if (have + 1e-9 < need) {
-          short.push(`${text(line.name)} (موجود ${formatMoney(have)}، لازم ${formatMoney(need)})`);
+      const productChanged = data.productId !== num(order[0].product_id);
+      if (productChanged && delivered > 1e-9) {
+        throw new Error("پس از تحویل نمی‌توان مدل کالا را عوض کرد");
+      }
+      const stageId = await workerStageId(sql, context.userId, data.workerId);
+      if (data.workerId != null) {
+        const w = await sql<{ employment: string | null }>`
+          select employment from parties where id = ${data.workerId} and user_id = ${context.userId}
+        `;
+        if (w[0] && text(w[0].employment) === "salaried") {
+          throw new Error("سفارش تولید فقط به کارگر کانتراتی داده می‌شود");
         }
       }
-      if (short.length) throw new Error(`موجودی مواد خام کافی نیست:\n${short.join("\n")}`);
-      await sql`delete from work_order_alloc where work_order_id = ${data.id} and user_id = ${context.userId}`;
-      for (const line of bom) {
-        const per = num(line.quantity);
-        await sql`
-          insert into work_order_alloc (
-            user_id, work_order_id, raw_item_id, raw_item_name, qty_per_unit, allocated_qty
-          ) values (
-            ${context.userId}, ${data.id}, ${num(line.raw_item_id)}, ${text(line.name)}, ${per},
-            ${per * data.quantity}
-          )
+      const rootId = order[0].root_id;
+      const isRoot = rootId == null || num(rootId) === num(order[0].id);
+      const product = await sql<{ id: number; name: string; kind: string }>`
+        select id, name, kind from items where id = ${data.productId} and user_id = ${context.userId}
+      `;
+      if (!product[0] || product[0].kind !== "product") throw new Error("کالا یافت نشد");
+      if (isRoot) {
+        const bom = await sql<{ raw_item_id: number; quantity: unknown; name: string }>`
+          select b.raw_item_id, b.quantity, i.name
+          from bom_lines b
+          join items i on i.id = b.raw_item_id and i.user_id = b.user_id
+          where b.product_id = ${data.productId} and b.user_id = ${context.userId}
         `;
+        if (!bom.length) throw new Error("فرمول مواد خام این کالا ثبت نشده است");
+        const oldAlloc = await sql<{ raw_item_id: number; allocated_qty: unknown }>`
+          select raw_item_id, allocated_qty from work_order_alloc
+          where work_order_id = ${data.id} and user_id = ${context.userId}
+        `;
+        const inv = await loadInventoryState(sql, context.userId);
+        const short: string[] = [];
+        for (const line of bom) {
+          const need = num(line.quantity) * data.quantity;
+          const prev = oldAlloc.find((a) => num(a.raw_item_id) === num(line.raw_item_id));
+          const released = num(prev?.allocated_qty);
+          const have = (inv.raw.find((r) => r.itemId === num(line.raw_item_id))?.qty ?? 0) + released;
+          if (have + 1e-9 < need) {
+            short.push(`${text(line.name)} (موجود ${formatMoney(have)}، لازم ${formatMoney(need)})`);
+          }
+        }
+        if (short.length) throw new Error(`موجودی مواد خام کافی نیست:\n${short.join("\n")}`);
+        await sql`delete from work_order_alloc where work_order_id = ${data.id} and user_id = ${context.userId}`;
+        for (const line of bom) {
+          const per = num(line.quantity);
+          await sql`
+            insert into work_order_alloc (
+              user_id, work_order_id, raw_item_id, raw_item_name, qty_per_unit, allocated_qty
+            ) values (
+              ${context.userId}, ${data.id}, ${num(line.raw_item_id)}, ${text(line.name)}, ${per},
+              ${per * data.quantity}
+            )
+          `;
+        }
       }
-    }
-    await sql`
-      update work_orders set
-        worker_id = ${data.workerId}, product_id = ${data.productId}, product_name = ${product[0].name},
-        quantity = ${data.quantity}, occurred_on = ${data.occurredOn}, notes = ${data.notes},
-        stage_id = ${stageId}
-      where id = ${data.id} and user_id = ${context.userId}
-    `;
-    const weekNo = (data.invoiceNo || "").trim();
-    if (weekNo && delivered < 1e-9) {
       await sql`
-        update work_orders set invoice_no = ${weekNo}
+        update work_orders set
+          worker_id = ${data.workerId}, product_id = ${data.productId}, product_name = ${product[0].name},
+          quantity = ${data.quantity}, occurred_on = ${data.occurredOn}, notes = ${data.notes},
+          stage_id = ${stageId}
         where id = ${data.id} and user_id = ${context.userId}
       `;
-    }
-    return { id: data.id };
+      const weekNo = (data.invoiceNo || "").trim();
+      if (weekNo && delivered < 1e-9) {
+        await sql`
+          update work_orders set invoice_no = ${weekNo}
+          where id = ${data.id} and user_id = ${context.userId}
+        `;
+      }
+      return { id: data.id };
+    });
   });
 
 export const deleteWorkOrder = createServerFn({ method: "POST" })

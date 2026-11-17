@@ -11,6 +11,7 @@ import {
   loadCatalogs,
   fxToBase,
   loadInventoryState,
+  lockStock,
   nextDocNo,
   requireProfile,
   sqlOf,
@@ -508,6 +509,8 @@ export const saveSaleInvoice = createServerFn({ method: "POST" })
       for (let attempt = 0; attempt < 5; attempt++) {
         try {
           return await withTransaction(async (sql) => {
+      // ACC-08: stock lock first, so the check below sees every earlier sale.
+      await lockStock(sql, context.userId);
       const account = await requireAccount(sql, context.userId, data.accountId);
       const kind = data.kind === "raw" ? "raw" : "product";
       const inv = await loadInventoryState(sql, context.userId);

@@ -959,6 +959,16 @@ type InventoryState = {
   overheadsByProduct: Record<number, ItemOverhead[]>;
 };
 
+/**
+ * ACC-08: serialize stock postings of one workspace. Call it as the FIRST
+ * statement of any transaction that checks or moves stock, before reading
+ * the stock it checks. Lock order everywhere: this stock lock, then the
+ * document-number lock (allocInvoiceNo), then row locks (accounts, orders).
+ */
+export async function lockStock(sql: Sql, userId: string): Promise<void> {
+  await sql.query("select pg_advisory_xact_lock(hashtext($1))", [`${userId}:stock`]);
+}
+
 export async function loadInventoryState(sql: Sql, userId: string): Promise<InventoryState> {
   const { saleCosts: _costs, ...state } = await loadInventoryValuation(sql, userId);
   return state;
