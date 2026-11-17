@@ -3,6 +3,7 @@ import { authMiddleware } from "@/lib/auth/middleware";
 import { withTransaction, type Sql } from "@/lib/db";
 import { convertAmount, formatMoney, num, text } from "@/lib/format";
 import type { InvoiceLine, Item, PurchaseInvoice, ReceiveStatus, SaleInvoice } from "@/lib/types";
+import { syncLinkedPayment } from "./linked-payment";
 import {
   assertCashAvailable,
   guard,
@@ -128,60 +129,6 @@ async function ensureSaleColumns(sql: Awaited<ReturnType<typeof sqlOf>>) {
   await sql.query("alter table sale_invoices add column if not exists cash_included_base double precision not null default 0");
   await sql.query("alter table party_payments add column if not exists applied_sale_id bigint");
   await sql.query("alter table party_payments add column if not exists fx_rate double precision not null default 0");
-}
-
-async function syncLinkedPayment(
-  sql: Awaited<ReturnType<typeof sqlOf>>,
-  args: {
-    userId: string;
-    kind: "payment" | "receipt";
-    partyId: number | null;
-    amount: number;
-    currencyId: number;
-    fxRate?: number;
-    accountId: number | null;
-    occurredOn: string;
-    purchaseInvoiceId?: number | null;
-    saleInvoiceId?: number | null;
-    label: string;
-  },
-) {
-  const payFx = args.fxRate && args.fxRate > 0 ? args.fxRate : 0;
-  const existing = args.purchaseInvoiceId
-    ? await sql<{ id: number }>`
-        select id from party_payments
-        where user_id = ${args.userId} and purchase_invoice_id = ${args.purchaseInvoiceId} and kind = ${args.kind}
-      `
-    : await sql<{ id: number }>`
-        select id from party_payments
-        where user_id = ${args.userId} and sale_invoice_id = ${args.saleInvoiceId} and kind = ${args.kind}
-      `;
-  if (!args.partyId || args.amount <= 0) {
-    if (existing[0]) {
-      await sql`delete from party_payments where id = ${existing[0].id} and user_id = ${args.userId}`;
-    }
-    return;
-  }
-  if (existing[0]) {
-    await sql`
-      update party_payments set
-        party_id = ${args.partyId}, amount = ${args.amount}, currency_id = ${args.currencyId},
-        fx_rate = ${payFx}, account_id = ${args.accountId}, occurred_on = ${args.occurredOn}, notes = ${args.label}
-      where id = ${existing[0].id} and user_id = ${args.userId}
-    `;
-    return;
-  }
-  const rows = await sql<{ id: number }>`
-    insert into party_payments (
-      user_id, party_id, kind, amount, currency_id, fx_rate, account_id, receipt_no, occurred_on, notes,
-      purchase_invoice_id, sale_invoice_id
-    ) values (
-      ${args.userId}, ${args.partyId}, ${args.kind}, ${args.amount}, ${args.currencyId}, ${payFx}, ${args.accountId},
-      ${"موقت"}, ${args.occurredOn}, ${args.label}, ${args.purchaseInvoiceId ?? null}, ${args.saleInvoiceId ?? null}
-    ) returning id
-  `;
-  const receipt = `ق-${rows[0].id}`;
-  await sql`update party_payments set receipt_no = ${receipt} where id = ${rows[0].id}`;
 }
 
 export const listPurchaseInvoices = createServerFn({ method: "GET" })
