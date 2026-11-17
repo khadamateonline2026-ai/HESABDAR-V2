@@ -207,6 +207,28 @@ export function invoiceOf(prefix: string, id: number, stored: unknown): string {
   return v || `${prefix}-${id}`;
 }
 
+/**
+ * STR-08: only currencies and account balances (what a cash check needs),
+ * instead of the whole catalog.
+ */
+export async function loadAccountBalances(
+  sql: Sql,
+  userId: string,
+): Promise<{ currencies: Catalogs["currencies"]; accounts: Catalogs["accounts"] }> {
+  const [currencies, accountRows] = await Promise.all([
+    sql<Record<string, unknown>>`select * from currencies where user_id = ${userId} order by id`,
+    sql<Record<string, unknown>>`
+      select a.*, c.name as currency_name, c.symbol as currency_symbol, c.rate_to_base
+      from accounts a
+      join currencies c on c.id = a.currency_id and c.user_id = a.user_id
+      where a.user_id = ${userId}
+      order by a.id
+    `,
+  ]);
+  const currencyList = currencies.map(mapCurrency);
+  return { currencies: currencyList, accounts: await withBalances(sql, userId, accountRows, currencyList) };
+}
+
 export async function loadCatalogs(sql: Sql, userId: string): Promise<Catalogs> {
   const [
     currencies,
@@ -1437,7 +1459,7 @@ export async function assertCashAvailable(
 ): Promise<void> {
   if (args.amount <= 1e-9) throw new Error("مبلغ باید بزرگ‌تر از صفر باشد");
   if (args.accountId == null) throw new Error(INSUFFICIENT_CASH);
-  const catalogs = await loadCatalogs(sql, userId);
+  const catalogs = await loadAccountBalances(sql, userId);
   const acc = catalogs.accounts.find((a) => a.id === args.accountId);
   if (!acc) throw new Error(INSUFFICIENT_CASH);
   if (acc.kind === "counterparty") return;
