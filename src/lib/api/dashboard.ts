@@ -2,7 +2,7 @@ import { createServerFn } from "@tanstack/react-start";
 import { authMiddleware } from "@/lib/auth/middleware";
 import { num, text, todayIso } from "@/lib/format";
 import type { DashboardAlert, DashboardData } from "@/lib/types";
-import { fxToBase, loadCatalogs, loadInventoryState, requireProfile, sqlOf, wageForProduct } from "./helpers";
+import { fxToBase, loadCatalogs, loadInventoryValuation, requireProfile, sqlOf, wageForProduct } from "./helpers";
 import { loadRecurringDues } from "./ops";
 import { loadPartySummaries } from "./reports";
 
@@ -46,7 +46,7 @@ export const getDashboard = createServerFn({ method: "GET" })
       `,
       sql<Record<string, unknown>>`select amount, currency_id, as_debt, fx_rate from expenses where user_id = ${context.userId}`,
       sql<Record<string, unknown>>`select * from purchase_invoices where user_id = ${context.userId}`,
-      loadInventoryState(sql, context.userId),
+      loadInventoryValuation(sql, context.userId),
       loadRecurringDues(sql, context.userId),
       loadPartySummaries(sql, context.userId, "customer"),
       loadPartySummaries(sql, context.userId, "vendor"),
@@ -91,15 +91,16 @@ export const getDashboard = createServerFn({ method: "GET" })
       .reduce((s, r) => s + toBase(num(r.amount), num(r.currency_id)), 0);
 
     const items = catalogs.items;
+    // ACC-02: cost of goods sold = each sale line at the weighted average cost
+    // of the stock when it was sold (not today's purchase price).
+    const saleCost = (r: Record<string, unknown>) => inv.saleCosts[num(r.id)] ?? 0;
     let cogsBase = 0;
     const productSales: { name: string; qty: number; amountBase: number; occurredOn: string }[] = [];
     for (const item of items.filter((i) => i.kind === "product")) {
       const modelSales = sales.filter(
         (r) => num(r.item_id) === item.id || text(r.item_name) === item.name,
       );
-      const qtySold = modelSales.reduce((s, r) => s + num(r.quantity), 0);
-      const card = inv.products.find((c) => c.itemId === item.id || c.name === item.name);
-      cogsBase += qtySold * (card?.unitCost ?? 0);
+      cogsBase += modelSales.reduce((s, r) => s + saleCost(r), 0);
       for (const r of modelSales) {
         productSales.push({
           name: item.name,
@@ -114,8 +115,7 @@ export const getDashboard = createServerFn({ method: "GET" })
         (i) => i.kind === "product" && (i.id === num(r.item_id) || i.name === text(r.item_name)),
       );
       if (isProduct) continue;
-      const rawCard = inv.raw.find((c) => c.itemId === num(r.item_id) || c.name === text(r.item_name));
-      cogsBase += num(r.quantity) * (rawCard?.unitCost || num(r.unit_price) * lineRate(r));
+      cogsBase += saleCost(r);
     }
 
     const customerReceivableBase = customers.summaries
@@ -248,6 +248,14 @@ export const getDashboard = createServerFn({ method: "GET" })
         alerts.push({ kind: "warn", section: "خرید", text: `فاکتور ${p.no} هنوز نرسیده و تاریخ تقریبی آن گذشته است` });
       }
     }
+    const unvalued = [...inv.products, ...inv.raw].filter((c) => c.costMissing).length;
+    if (unvalued > 0) {
+      alerts.push({
+        kind: "warn",
+        section: "گدام",
+        text: `موجودی اول دوره ${unvalued} کالا قیمت خرید ندارد و ارزش آن صفر حساب شده است؛ قیمت خرید این کالاها را ثبت کنید`,
+      });
+    }
     if (cashBase < 0) alerts.push({ kind: "danger", section: "نقدینگی", text: "موجودی نقدی مجموعی منفی است" });
     if (receivableBase > 0) {
       alerts.push({ kind: "info", section: "طلبات", text: "طلبات باز وجود دارد — جزئیات در گزارش طلبات" });
@@ -332,8 +340,7 @@ export const getDashboard = createServerFn({ method: "GET" })
         const qty = num(r.quantity);
         const amountBase = qty * num(r.unit_price) * lineRate(r);
         viewSales += amountBase;
-        const rawCard = inv.raw.find((c) => c.itemId === num(r.item_id) || c.name === text(r.item_name));
-        viewCogs += qty * (rawCard?.unitCost || num(r.unit_price) * lineRate(r));
+        viewCogs += saleCost(r);
         viewSalesLines.push({
           name: text(r.item_name),
           qty,

@@ -121,6 +121,8 @@ export type StockCard = {
   qty: number;
   unitCost: number;
   valueBase: number;
+  /** ACC-02: part of the stock came in with no cost (no value, no purchase price). */
+  costMissing?: boolean;
   kind: Item["kind"];
   salePrice: number;
   purchasePrice: number;

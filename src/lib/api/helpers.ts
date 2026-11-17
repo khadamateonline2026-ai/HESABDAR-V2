@@ -911,70 +911,27 @@ export function fxToBase(fxEnabled: unknown, fxRate: unknown, currencyRate: numb
   return 1;
 }
 
-export function computeWmaAndStock(args: {
-  name: string;
-  itemId: number | null;
-  opening: { itemName: string; kind: string; quantity: number; valueBase: number; occurredOn: string; id: number }[];
-  purchases: { itemId: number | null; itemName: string; quantity: number; unitPrice: number; rate: number; occurredOn: string; id: number }[];
-  sales: { itemId: number | null; itemName: string; quantity: number; occurredOn: string; id: number }[];
-}): { stockQty: number; unitCost: number } {
-  type Ev = { date: string; id: number; qty: number; value: number; sell: boolean };
-  const events: Ev[] = [];
-  for (const o of args.opening) {
-    if (o.kind !== "finished" || o.itemName !== args.name) continue;
-    events.push({ date: o.occurredOn, id: o.id, qty: o.quantity, value: o.valueBase, sell: false });
-  }
-  for (const p of args.purchases) {
-    const match = (args.itemId != null && p.itemId === args.itemId) || p.itemName === args.name;
-    if (!match) continue;
-    events.push({
-      date: p.occurredOn,
-      id: p.id,
-      qty: p.quantity,
-      value: p.quantity * p.unitPrice * p.rate,
-      sell: false,
-    });
-  }
-  for (const s of args.sales) {
-    const match = (args.itemId != null && s.itemId === args.itemId) || s.itemName === args.name;
-    if (!match) continue;
-    events.push({ date: s.occurredOn, id: s.id, qty: s.quantity, value: 0, sell: true });
-  }
-  events.sort((a, b) => (a.date === b.date ? a.id - b.id : a.date < b.date ? -1 : 1));
-  let qty = 0;
-  let value = 0;
-  let cost = 0;
-  for (const e of events) {
-    if (e.sell) {
-      const take = Math.min(qty, e.qty);
-      value -= take * cost;
-      qty -= take;
-      if (qty <= 1e-9) {
-        qty = 0;
-        value = 0;
-      }
-    } else {
-      qty += e.qty;
-      value += e.value;
-      cost = qty > 0 ? value / qty : 0;
-    }
-  }
-  return { stockQty: qty, unitCost: cost };
-}
-
-type Lot = { qty: number; value: number };
+/**
+ * ACC-02: stock is valued at weighted average cost (WAC). Each lot holds the
+ * quantity on hand and its total cost in base currency; receipts add their
+ * actual cost, issues (sales, production, negative adjustments) leave at the
+ * current average. `unvalued` is the part of `qty` that came in without any
+ * cost (opening stock with no value and no purchase price on the item).
+ */
+type Lot = { qty: number; value: number; unvalued: number };
 
 function lotOf(map: Map<string, Lot>, key: string): Lot {
-  const cur = map.get(key) ?? { qty: 0, value: 0 };
+  const cur = map.get(key) ?? { qty: 0, value: 0, unvalued: 0 };
   map.set(key, cur);
   return cur;
 }
 
-function addLot(map: Map<string, Lot>, key: string, qty: number, value: number) {
+function addLot(map: Map<string, Lot>, key: string, qty: number, value: number, unvalued = 0) {
   if (Math.abs(qty) <= 1e-12 && Math.abs(value) <= 1e-12) return;
   const l = lotOf(map, key);
   l.qty += qty;
   l.value += value;
+  l.unvalued += unvalued;
 }
 
 function takeLot(map: Map<string, Lot>, key: string, qty: number): number {
@@ -982,26 +939,39 @@ function takeLot(map: Map<string, Lot>, key: string, qty: number): number {
   if (qty <= 0 || l.qty <= 0) return 0;
   const cost = l.value / l.qty;
   const actual = Math.min(l.qty, qty);
+  l.unvalued -= actual * (l.unvalued / l.qty);
   l.qty -= actual;
   const val = actual * cost;
   l.value -= val;
   if (l.qty <= 1e-9) {
     l.qty = 0;
     l.value = 0;
+    l.unvalued = 0;
   }
   return val;
 }
 
-export async function loadInventoryState(
-  sql: Sql,
-  userId: string,
-): Promise<{
+type InventoryState = {
   products: StockCard[];
   raw: StockCard[];
   workerRaw: StockCard[];
   bomByProduct: Record<number, BomLine[]>;
   overheadsByProduct: Record<number, ItemOverhead[]>;
-}> {
+};
+
+export async function loadInventoryState(sql: Sql, userId: string): Promise<InventoryState> {
+  const { saleCosts: _costs, ...state } = await loadInventoryValuation(sql, userId);
+  return state;
+}
+
+/**
+ * ACC-02: stock cards valued at weighted average cost, plus the cost of goods
+ * sold of every sale line (base currency, at the average cost when it was sold).
+ */
+export async function loadInventoryValuation(
+  sql: Sql,
+  userId: string,
+): Promise<InventoryState & { saleCosts: Record<number, number> }> {
   const [itemRows, opening, purchases, sales, currencies, bomRows, orders, deliveries, overheadRows, allocRows] =
     await Promise.all([
       sql<Record<string, unknown>>`
@@ -1116,13 +1086,19 @@ export async function loadInventoryState(
     const name = text(o.item_name);
     const k = keyOf(null, name);
     const qty = num(o.quantity);
-    const value = num(o.value_base);
+    const stored = num(o.value_base);
     const finished = text(o.kind) !== "raw";
+    const lots = finished ? product : raw;
+    // ACC-02: opening stock saved without a value uses the item's purchase
+    // price; with no purchase price it stays at 0 and the card is flagged.
+    const price = byName.get(name)?.purchasePrice ?? 0;
+    const value = Math.abs(stored) > 1e-9 ? stored : price > 1e-9 ? qty * price : 0;
+    const unvalued = qty > 0 && Math.abs(value) <= 1e-9 ? qty : 0;
     events.push({
       date: text(o.occurred_on),
       rank: 0,
       id: num(o.id),
-      run: () => addLot(finished ? product : raw, k, qty, value),
+      run: () => (qty < 0 ? void takeLot(lots, k, -qty) : addLot(lots, k, qty, value, unvalued)),
     });
   }
   for (const p of purchases) {
@@ -1186,18 +1162,24 @@ export async function loadInventoryState(
       },
     });
   }
+  const saleCosts: Record<number, number> = {};
+  const shortfalls: { saleId: number; key: string; isRaw: boolean; qty: number }[] = [];
   for (const s of sales) {
     const name = text(s.item_name);
     const id = s.item_id == null ? null : num(s.item_id);
     const k = keyOf(id, name);
     const qty = num(s.quantity);
     const isRaw = kindOf(id, name) === "raw";
+    const saleId = num(s.id);
     events.push({
       date: text(s.occurred_on),
       rank: 4,
-      id: num(s.id),
+      id: saleId,
       run: () => {
-        takeLot(isRaw ? raw : product, k, qty);
+        const lots = isRaw ? raw : product;
+        const onHand = Math.max(0, lots.get(k)?.qty ?? 0);
+        saleCosts[saleId] = takeLot(lots, k, qty);
+        if (qty > onHand + 1e-9) shortfalls.push({ saleId, key: k, isRaw, qty: qty - onHand });
       },
     });
   }
@@ -1219,10 +1201,17 @@ export async function loadInventoryState(
       lastBuy.set(item.id, { date, id, price });
     }
   }
-  function card(it: Item, lot: Lot | undefined, fallbackCost: number): StockCard {
-    const qty = lot?.qty ?? 0;
+  /** Unit cost shown when nothing is on hand (forms use it as an estimate). */
+  function referenceCost(it: Item, fallbackCost: number): number {
     const bought = lastBuy.get(it.id)?.price ?? 0;
-    const unitCost = it.purchasePrice > 1e-9 ? it.purchasePrice : bought > 1e-9 ? bought : fallbackCost;
+    return it.purchasePrice > 1e-9 ? it.purchasePrice : bought > 1e-9 ? bought : fallbackCost;
+  }
+  function card(it: Item, lot: Lot | undefined, fallbackCost: number): StockCard {
+    // ACC-02: on-hand stock is valued at its weighted average cost.
+    const qty = lot?.qty ?? 0;
+    const onHand = qty > 1e-9;
+    const unitCost = onHand ? (lot?.value ?? 0) / qty : referenceCost(it, fallbackCost);
+    const costMissing = onHand && (lot?.unvalued ?? 0) > 1e-9;
     return {
       itemId: it.id,
       name: it.name,
@@ -1234,7 +1223,8 @@ export async function loadInventoryState(
       minQty: it.minQty,
       qty,
       unitCost,
-      valueBase: qty * unitCost,
+      valueBase: onHand ? (lot?.value ?? 0) : 0,
+      ...(costMissing ? { costMissing: true } : {}),
       kind: it.kind,
       salePrice: it.salePrice,
       purchasePrice: it.purchasePrice,
@@ -1256,7 +1246,17 @@ export async function loadInventoryState(
     for (const extra of overheadsByProduct[productId] ?? []) sum += extra.amount;
     return sum;
   }
+  // Sold more than was on hand: the missing part is costed at the item's
+  // current/reference cost instead of 0.
+  for (const sf of shortfalls) {
+    const it = sf.key.startsWith("id:") ? byId.get(Number(sf.key.slice(3))) : undefined;
+    if (!it) continue;
+    const lot = (sf.isRaw ? raw : product).get(sf.key);
+    const unit = lot && lot.qty > 1e-9 ? lot.value / lot.qty : referenceCost(it, sf.isRaw ? 0 : bomCost(it.id));
+    saleCosts[sf.saleId] = (saleCosts[sf.saleId] ?? 0) + sf.qty * unit;
+  }
   return {
+    saleCosts,
     products: items.filter((i) => i.kind === "product").map((i) => card(i, product.get(`id:${i.id}`), bomCost(i.id))),
     raw: items.filter((i) => i.kind === "raw").map((i) => card(i, raw.get(`id:${i.id}`), 0)),
     workerRaw: items
