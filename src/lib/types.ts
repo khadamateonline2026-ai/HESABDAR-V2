@@ -598,6 +598,8 @@ export type DashboardData = {
   profitBase: number;
   receivableBase: number;
   customerReceivableBase: number;
+  /** ACC-12: customers' advance payments we still hold (base currency). */
+  customerAdvanceBase: number;
   cashTakeBase: number;
   prepaymentBase: number;
   payableBase: number;

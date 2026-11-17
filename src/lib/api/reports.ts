@@ -284,13 +284,21 @@ export const getSalesLedger = createServerFn({ method: "POST" })
     const sql = await sqlOf();
     await requireProfile(sql, context.userId);
     await assertOwned(sql, context.userId, [["items", data.itemId]]);
+    return salesLedgerData(sql, context.userId, data.itemId ?? null);
+  });
+
+/** Sales ledger rows (base currency) and the optional model summary. */
+export async function salesLedgerData(sql: Sql, userId: string, itemId: number | null) {
+    const context = { userId };
+    const data = { itemId };
     const [items, currencies, sales] = await Promise.all([
       sql<Record<string, unknown>>`select id, name, kind from items where user_id = ${context.userId} order by name`,
       sql<{ id: number; rate_to_base: unknown }>`select id, rate_to_base from currencies where user_id = ${context.userId}`,
       sql<Record<string, unknown>>`
-        select s.*, i.kind as item_kind
+        select s.*, i.kind as item_kind, si.fx_enabled as inv_fx, si.fx_rate as inv_rate
         from sales s
         left join items i on i.id = s.item_id and i.user_id = s.user_id
+        left join sale_invoices si on si.id = s.invoice_id and si.user_id = s.user_id
         where s.user_id = ${context.userId}
         order by s.occurred_on, s.id
       `,
@@ -309,7 +317,8 @@ export const getSalesLedger = createServerFn({ method: "POST" })
       .map((r) => {
         const kind = resolveKind(r, itemById, itemByName);
         if (kind !== "product" && kind !== "raw") return null;
-        const rate = rates.get(num(r.currency_id)) ?? 1;
+        // ACC-12: an invoiced sale keeps the exchange rate frozen on its invoice.
+        const rate = fxToBase(r.inv_fx, r.inv_rate, rates.get(num(r.currency_id)) ?? 1);
         const qty = num(r.quantity);
         const price = num(r.unit_price) * rate;
         return {
@@ -336,7 +345,7 @@ export const getSalesLedger = createServerFn({ method: "POST" })
         );
         const qtySold = modelSales.reduce((s, r) => s + num(r.quantity), 0);
         const amountSold = modelSales.reduce((s, r) => {
-          const rate = rates.get(num(r.currency_id)) ?? 1;
+          const rate = fxToBase(r.inv_fx, r.inv_rate, rates.get(num(r.currency_id)) ?? 1);
           return s + num(r.quantity) * num(r.unit_price) * rate;
         }, 0);
         const inv = await loadInventoryState(sql, context.userId);
@@ -355,7 +364,7 @@ export const getSalesLedger = createServerFn({ method: "POST" })
     }
 
     return { models, summary, rows };
-  });
+}
 
 function cashPartyOptionId(accountId: number) {
   return -accountId;

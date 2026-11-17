@@ -1,9 +1,10 @@
 import { createServerFn } from "@tanstack/react-start";
 import { authMiddleware } from "@/lib/auth/middleware";
-import { num, text, todayIso } from "@/lib/format";
+import { formatMoneyInt, num, text, todayIso } from "@/lib/format";
 import type { DashboardAlert, DashboardData } from "@/lib/types";
 import { fxToBase, loadCatalogs, loadInventoryValuation, loadWarehouseStock, requireProfile, sqlOf, wageForProduct } from "./helpers";
 import { loadRecurringDues } from "./ops";
+import { splitPartyBalances } from "@/lib/kpi";
 import { loadPartySummaries } from "./reports";
 
 async function productionEnabled(sql: Awaited<ReturnType<typeof sqlOf>>, userId: string) {
@@ -119,9 +120,10 @@ export const getDashboard = createServerFn({ method: "GET" })
       cogsBase += saleCost(r);
     }
 
-    const customerReceivableBase = customers.summaries
-      .filter((s) => s.remainingBase > 1e-9)
-      .reduce((s, x) => s + x.remainingBase, 0);
+    // ACC-12: customers who paid in advance are shown too (not netted, not dropped).
+    const customerSplit = splitPartyBalances(customers.summaries);
+    const customerReceivableBase = customerSplit.owedToUs;
+    const customerAdvanceBase = customerSplit.heldForThem;
     const cashTakeRows = await sql<{ amount: unknown; fx_rate: unknown; rate_to_base: unknown }>`
       select p.amount, p.fx_rate, c.rate_to_base
       from party_payments p
@@ -257,6 +259,13 @@ export const getDashboard = createServerFn({ method: "GET" })
         text: `موجودی اول دوره ${unvalued} کالا قیمت خرید ندارد و ارزش آن صفر حساب شده است؛ قیمت خرید این کالاها را ثبت کنید`,
       });
     }
+    if (customerAdvanceBase > 1e-9) {
+      alerts.push({
+        kind: "info",
+        section: "مشتریان",
+        text: `پیش‌دریافت از مشتریان (بدهی ما به مشتریان): ${formatMoneyInt(customerAdvanceBase)} ؋`,
+      });
+    }
     if (cashBase < 0) alerts.push({ kind: "danger", section: "نقدینگی", text: "موجودی نقدی مجموعی منفی است" });
     if (receivableBase > 0) {
       alerts.push({ kind: "info", section: "طلبات", text: "طلبات باز وجود دارد — جزئیات در گزارش طلبات" });
@@ -375,6 +384,7 @@ export const getDashboard = createServerFn({ method: "GET" })
       profitBase: viewSales - viewCogs - expenseBase,
       receivableBase,
       customerReceivableBase,
+      customerAdvanceBase,
       cashTakeBase,
       prepaymentBase,
       payableBase: viewPayable,
