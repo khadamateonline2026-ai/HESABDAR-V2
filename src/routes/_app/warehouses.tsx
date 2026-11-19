@@ -133,7 +133,7 @@ function Warehouses() {
           fill
           contrast
           labelClass="h-12 text-base font-bold sm:text-lg"
-          className="mb-0"
+          className="mb-0 pay-tabs-flat"
           value={tab}
           onChange={(id) => {
             setTab(id);

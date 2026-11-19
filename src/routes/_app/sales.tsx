@@ -106,6 +106,7 @@ function Sales() {
       <SectionTabs
         fill
         contrast
+        className="pay-tabs-flat"
         labelClass="h-12 text-base font-bold sm:text-lg"
         value={production ? tab : shopTab}
         onChange={(id) => {
