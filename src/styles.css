@@ -1103,7 +1103,7 @@ html.theme-light .glass-sections .dash-card .dash-card.list-card {
 /* ── reports: full-width report tabs + heading bars (revert this commit to undo) ── */
 .reports-area .reports-tabs {
   display: grid !important;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(5, minmax(0, 1fr));
 }
 .reports-area .reports-tabs > a { justify-content: center; padding-inline: 0.5rem; }
 .reports-area h2.mb-3 {

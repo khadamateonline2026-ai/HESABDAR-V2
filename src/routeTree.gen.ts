@@ -28,6 +28,7 @@ import { Route as AppFinanceCapitalRouteImport } from './routes/_app/finance.cap
 import { Route as AppFinanceOpeningRouteImport } from './routes/_app/finance.opening'
 import { Route as AppFinanceTransfersRouteImport } from './routes/_app/finance.transfers'
 import { Route as AppReportsIndexRouteImport } from './routes/_app/reports.index'
+import { Route as AppReportsDailyRouteImport } from './routes/_app/reports.daily'
 import { Route as AppReportsHistoryRouteImport } from './routes/_app/reports.history'
 import { Route as AppReportsPayablesRouteImport } from './routes/_app/reports.payables'
 import { Route as AppReportsReceivablesRouteImport } from './routes/_app/reports.receivables'
@@ -135,6 +136,11 @@ const AppReportsIndexRoute = AppReportsIndexRouteImport.update({
   path: '/',
   getParentRoute: () => AppReportsRoute,
 } as any)
+const AppReportsDailyRoute = AppReportsDailyRouteImport.update({
+  id: '/daily',
+  path: '/daily',
+  getParentRoute: () => AppReportsRoute,
+} as any)
 const AppReportsHistoryRoute = AppReportsHistoryRouteImport.update({
   id: '/history',
   path: '/history',
@@ -214,6 +220,7 @@ export interface FileRoutesByFullPath {
   '/finance/capital': typeof AppFinanceCapitalRoute
   '/finance/opening': typeof AppFinanceOpeningRoute
   '/finance/transfers': typeof AppFinanceTransfersRoute
+  '/reports/daily': typeof AppReportsDailyRoute
   '/reports/history': typeof AppReportsHistoryRoute
   '/reports/payables': typeof AppReportsPayablesRoute
   '/reports/receivables': typeof AppReportsReceivablesRoute
@@ -245,6 +252,7 @@ export interface FileRoutesByTo {
   '/finance/capital': typeof AppFinanceCapitalRoute
   '/finance/opening': typeof AppFinanceOpeningRoute
   '/finance/transfers': typeof AppFinanceTransfersRoute
+  '/reports/daily': typeof AppReportsDailyRoute
   '/reports/history': typeof AppReportsHistoryRoute
   '/reports/payables': typeof AppReportsPayablesRoute
   '/reports/receivables': typeof AppReportsReceivablesRoute
@@ -279,6 +287,7 @@ export interface FileRoutesById {
   '/_app/finance/capital': typeof AppFinanceCapitalRoute
   '/_app/finance/opening': typeof AppFinanceOpeningRoute
   '/_app/finance/transfers': typeof AppFinanceTransfersRoute
+  '/_app/reports/daily': typeof AppReportsDailyRoute
   '/_app/reports/history': typeof AppReportsHistoryRoute
   '/_app/reports/payables': typeof AppReportsPayablesRoute
   '/_app/reports/receivables': typeof AppReportsReceivablesRoute
@@ -313,6 +322,7 @@ export interface FileRouteTypes {
     | '/finance/capital'
     | '/finance/opening'
     | '/finance/transfers'
+    | '/reports/daily'
     | '/reports/history'
     | '/reports/payables'
     | '/reports/receivables'
@@ -344,6 +354,7 @@ export interface FileRouteTypes {
     | '/finance/capital'
     | '/finance/opening'
     | '/finance/transfers'
+    | '/reports/daily'
     | '/reports/history'
     | '/reports/payables'
     | '/reports/receivables'
@@ -377,6 +388,7 @@ export interface FileRouteTypes {
     | '/_app/finance/capital'
     | '/_app/finance/opening'
     | '/_app/finance/transfers'
+    | '/_app/reports/daily'
     | '/_app/reports/history'
     | '/_app/reports/payables'
     | '/_app/reports/receivables'
@@ -535,6 +547,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AppReportsIndexRouteImport
       parentRoute: typeof AppReportsRoute
     }
+    '/_app/reports/daily': {
+      id: '/_app/reports/daily'
+      path: '/daily'
+      fullPath: '/reports/daily'
+      preLoaderRoute: typeof AppReportsDailyRouteImport
+      parentRoute: typeof AppReportsRoute
+    }
     '/_app/reports/history': {
       id: '/_app/reports/history'
       path: '/history'
@@ -623,6 +642,7 @@ declare module '@tanstack/react-router' {
 }
 
 interface AppReportsRouteChildren {
+  AppReportsDailyRoute: typeof AppReportsDailyRoute
   AppReportsHistoryRoute: typeof AppReportsHistoryRoute
   AppReportsPayablesRoute: typeof AppReportsPayablesRoute
   AppReportsReceivablesRoute: typeof AppReportsReceivablesRoute
@@ -630,6 +650,7 @@ interface AppReportsRouteChildren {
 }
 
 const AppReportsRouteChildren: AppReportsRouteChildren = {
+  AppReportsDailyRoute: AppReportsDailyRoute,
   AppReportsHistoryRoute: AppReportsHistoryRoute,
   AppReportsPayablesRoute: AppReportsPayablesRoute,
   AppReportsReceivablesRoute: AppReportsReceivablesRoute,

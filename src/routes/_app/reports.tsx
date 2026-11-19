@@ -9,6 +9,7 @@ const TABS = [
   { to: "/reports/receivables", label: "طلبات" },
   { to: "/reports/payables", label: "بدهی‌ها" },
   { to: "/reports/history", label: "تاریخچه" },
+  { to: "/reports/daily", label: "روزنامچه دخل" },
 ] as const;
 
 function Page() {

@@ -65,6 +65,7 @@ const GROUPS: NavGroup[] = [
       { to: "/reports/receivables", label: "طلبات", area: "reports" },
       { to: "/reports/payables", label: "بدهی‌ها", area: "reports" },
       { to: "/reports/history", label: "تاریخچه", area: "reports" },
+      { to: "/reports/daily", label: "روزنامچه دخل", area: "reports" },
     ],
   },
 ];
