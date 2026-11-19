@@ -374,6 +374,8 @@ function SaleForm({
           cashPaymentIds: includeCash ? pickedCash : [],
           warehouseName: saleWh,
           lines: lines.map((l) => ({
+            // ردیف‌های قبلی شناسه خود را نگه می‌دارند تا قیمت مرجع زمان فروش اصلی حفظ شود.
+            id: initial?.lines.some((x) => String(x.id) === l.key) ? Number(l.key) : null,
             itemId: l.itemId,
             itemName: l.itemName,
             quantity: parseAmount(l.quantity),

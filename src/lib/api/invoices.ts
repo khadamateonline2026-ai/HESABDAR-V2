@@ -55,6 +55,46 @@ type LineIn = {
   notes?: string;
 };
 
+/**
+ * قیمت مرجع هر ردیف فروش هنگام ذخیره. ردیف قبلی (همان شناسه و همان کالا) قیمت
+ * زمان فروش اصلی را نگه می‌دارد (null هم null می‌ماند = محاسبه قدیمی). اگر کلاینت
+ * هیچ شناسه‌ای نفرستد (نسخه/صف آفلاین قدیمی)، ردیف‌ها به ترتیب با همان کالا جفت می‌شوند.
+ * ردیف جدید یا ردیفی که کالایش عوض شده، قیمت مرجع امروز را می‌گیرد.
+ */
+export function carryRefCosts(
+  oldLines: { id: number; itemId: number | null; refCost: number | null }[],
+  lines: { id?: number | null; itemId: number | null }[],
+  fresh: (itemId: number | null) => number | null,
+): (number | null)[] {
+  const used = new Set<number>();
+  const byId = new Map(oldLines.map((o) => [o.id, o]));
+  // کلاینت جدید برای هر ردیف id می‌فرستد (ردیف جدید = null)؛ نسخه/صف آفلاین قدیمی اصلاً نمی‌فرستد.
+  const withIds = lines.some((l) => l.id !== undefined);
+  const out: (number | null)[] = new Array<number | null>(lines.length).fill(null);
+  const pending: number[] = [];
+  lines.forEach((l, i) => {
+    const prev = l.id == null ? undefined : byId.get(Number(l.id));
+    if (prev && !used.has(prev.id) && prev.itemId != null && prev.itemId === l.itemId) {
+      used.add(prev.id);
+      out[i] = prev.refCost;
+    } else if (!withIds) {
+      pending.push(i);
+    } else {
+      out[i] = fresh(l.itemId);
+    }
+  });
+  for (const i of pending) {
+    const prev = oldLines.find((o) => !used.has(o.id) && o.itemId != null && o.itemId === lines[i].itemId);
+    if (prev) {
+      used.add(prev.id);
+      out[i] = prev.refCost;
+    } else {
+      out[i] = fresh(lines[i].itemId);
+    }
+  }
+  return out;
+}
+
 function fxRate(enabled: boolean, rate: number, stored: number) {
   if (!enabled) return 1;
   return rate > 0 ? rate : stored || 1;
@@ -684,10 +724,14 @@ export const saveSaleInvoice = createServerFn({ method: "POST" })
       const inv = await loadInventoryState(sql, context.userId);
       const pool = kind === "raw" ? inv.raw : inv.products;
       const giveBack = new Map<number, number>();
+      let oldLines: { id: number; item_id: number | null; quantity: unknown; ref_unit_cost_base: unknown }[] = [];
       if (data.id) {
-        const old = await sql<{ item_id: number | null; quantity: unknown }>`
-          select item_id, quantity from sales where invoice_id = ${data.id} and user_id = ${context.userId}
+        const old = await sql<{ id: number; item_id: number | null; quantity: unknown; ref_unit_cost_base: unknown }>`
+          select id, item_id, quantity, ref_unit_cost_base from sales
+          where invoice_id = ${data.id} and user_id = ${context.userId}
+          order by line_no nulls last, id
         `;
+        oldLines = old;
         for (const r of old) {
           if (r.item_id == null) continue;
           const idn = num(r.item_id);
@@ -782,8 +826,19 @@ export const saveSaleInvoice = createServerFn({ method: "POST" })
         id = rows[0].id;
       }
       if (!id) throw new Error("فاکتور ذخیره نشد");
+      // ویرایش فاکتور: ردیف‌های قبلی قیمت مرجع زمان فروش اصلی را نگه می‌دارند؛
+      // فقط ردیف جدید یا ردیفی که کالایش عوض شده قیمت مرجع امروز را می‌گیرد.
+      const refCosts = carryRefCosts(
+        oldLines.map((r) => ({
+          id: num(r.id),
+          itemId: r.item_id == null ? null : num(r.item_id),
+          refCost: r.ref_unit_cost_base == null ? null : num(r.ref_unit_cost_base),
+        })),
+        cleanLines,
+        (itemId) => saleRefUnitCost(inv, itemId),
+      );
       let lineNo = 1;
-      for (const l of cleanLines) {
+      for (const [lineIdx, l] of cleanLines.entries()) {
         await sql`
           insert into sales (
             user_id, customer_id, item_id, item_name, quantity, unit_id, unit_price, currency_id,
@@ -791,7 +846,7 @@ export const saveSaleInvoice = createServerFn({ method: "POST" })
           ) values (
             ${context.userId}, ${data.customerId}, ${l.itemId}, ${l.itemName.trim()}, ${l.quantity},
             ${l.unitId}, ${l.unitPrice}, ${data.currencyId}, ${data.accountId}, ${data.occurredOn},
-            ${l.notes ?? ""}, ${"final"}, ${invoiceNo}, ${id}, ${lineNo}, ${saleRefUnitCost(inv, l.itemId)}
+            ${l.notes ?? ""}, ${"final"}, ${invoiceNo}, ${id}, ${lineNo}, ${refCosts[lineIdx]}
           )
         `;
         lineNo += 1;

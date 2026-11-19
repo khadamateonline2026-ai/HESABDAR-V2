@@ -4,6 +4,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { applyMigrations, createTestDb, seedUser, type TestDb } from "@/lib/testing/pglite-db";
+import { carryRefCosts } from "./invoices";
 import { backfillSaleRefCosts, loadInventoryState, loadInventoryValuation, overheadPerUnitBase, saleRefUnitCost } from "./helpers";
 
 const U = "user-snap";
@@ -153,11 +154,11 @@ test("migration 0040 freezes existing deliveries at the overhead in force at dep
   await db.close();
 });
 
-test("saveSaleInvoice stores the reference unit cost on every sale line (re-snapshotted when the invoice is edited)", () => {
+test("saveSaleInvoice stores the reference unit cost on every sale line (new lines: today's)", () => {
   const body = handlerSource("invoices.ts", "saveSaleInvoice");
   const ins = body.split("insert into sales")[1] ?? "";
   assert.ok(ins.slice(0, 600).includes("ref_unit_cost_base"));
-  assert.ok(ins.slice(0, 600).includes("saleRefUnitCost(inv, l.itemId)"));
+  assert.ok(body.includes("(itemId) => saleRefUnitCost(inv, itemId)"));
 });
 
 test("oversold quantity keeps the cost frozen at sale time when the purchase price changes later", async () => {
@@ -200,5 +201,79 @@ test("old sale lines without a snapshot: same number as before, then frozen by t
   const later = await loadInventoryValuation(db.sql, U);
   assert.equal(later.saleCosts[s1], 800);
   assert.equal(later.saleCosts[s2], 800);
+  await db.close();
+});
+
+test("editing a sale invoice keeps each existing line's original reference cost", () => {
+  const body = handlerSource("invoices.ts", "saveSaleInvoice");
+  assert.ok(body.includes("carryRefCosts("), "edit must carry old snapshots over");
+  assert.ok(body.includes("${refCosts[lineIdx]}"));
+  const client = readFileSync(join(process.cwd(), "src/routes/_app/sales.tsx"), "utf8");
+  assert.ok(client.includes("id: initial?.lines.some((x) => String(x.id) === l.key) ? Number(l.key) : null"));
+});
+
+test("carryRefCosts: same line keeps its snapshot (null stays null); new or re-itemed lines get today's", () => {
+  const old = [
+    { id: 11, itemId: 1, refCost: 100 },
+    { id: 12, itemId: 2, refCost: null },
+    { id: 13, itemId: 3, refCost: 70 },
+  ];
+  const fresh = (itemId: number | null) => (itemId == null ? null : itemId * 1000);
+  // New client: ids sent; line 13's item changed to 4; one brand-new line of item 1.
+  assert.deepEqual(
+    carryRefCosts(old, [{ id: 11, itemId: 1 }, { id: 12, itemId: 2 }, { id: 13, itemId: 4 }, { id: null, itemId: 1 }], fresh),
+    [100, null, 4000, 1000],
+  );
+  // Old client / old offline queue (no ids): matched by item in order.
+  assert.deepEqual(
+    carryRefCosts(old, [{ itemId: 2 }, { itemId: 1 }, { itemId: 1 }, { itemId: 3 }], fresh),
+    [null, 100, 1000, 70],
+  );
+  // New invoice: everything fresh.
+  assert.deepEqual(carryRefCosts([], [{ id: null, itemId: 5 }], fresh), [5000]);
+});
+
+test("edit a sale after the purchase price changed: its oversold cost stays at the original rate", async () => {
+  const db = await createTestDb();
+  const ids = await db.tx((sql) => seedUser(sql, U));
+  const id = await item(db, "دکمه", "raw", 100);
+  await buy(db, ids.afnId, id, "دکمه", 5, 100, "2026-01-01");
+  const s1 = await sell(db, ids.afnId, id, "دکمه", 8, "2026-01-02", saleRefUnitCost(await loadInventoryState(db.sql, U), id));
+  assert.equal((await loadInventoryValuation(db.sql, U)).saleCosts[s1], 800);
+  await db.sql`update items set purchase_price = ${250} where id = ${id}`;
+  // Re-save as saveSaleInvoice does: read old lines, delete, re-insert with carried snapshots.
+  const inv = await loadInventoryState(db.sql, U);
+  const oldRows = await db.sql<{ id: number; item_id: number; ref_unit_cost_base: string | null }>`
+    select id, item_id, ref_unit_cost_base from sales where user_id = ${U} order by id
+  `;
+  const lines = [{ id: s1, itemId: id }];
+  const refs = carryRefCosts(
+    oldRows.map((r) => ({ id: r.id, itemId: r.item_id, refCost: r.ref_unit_cost_base == null ? null : Number(r.ref_unit_cost_base) })),
+    lines,
+    (itemId) => saleRefUnitCost(inv, itemId),
+  );
+  await db.sql`delete from sales where user_id = ${U}`;
+  const s1b = await sell(db, ids.afnId, id, "دکمه", 8, "2026-01-02", refs[0]);
+  // Re-snapshotting at edit time would give 5 × 100 + 3 × 250 = 1250.
+  assert.equal((await loadInventoryValuation(db.sql, U)).saleCosts[s1b], 800);
+  await db.close();
+});
+
+test("editing a delivery (quantity/date/receiver) updates it in place and keeps its stored overhead", async () => {
+  const src = readFileSync(join(process.cwd(), "src/lib/api/workers.ts"), "utf8");
+  assert.ok(!src.includes("insert into work_deliveries"), "worker edits must not re-create deliveries");
+  assert.ok(!src.includes("overhead_per_unit_base"), "worker edits must not rewrite the stored overhead");
+  const db = await createTestDb();
+  const ids = await db.tx((sql) => seedUser(sql, U));
+  const raw = await item(db, "پارچه", "raw");
+  const prod = await item(db, "پیراهن", "product");
+  await buy(db, ids.afnId, raw, "پارچه", 100, 50, "2026-01-01");
+  await setOverhead(db, prod, 30);
+  const o1 = await order(db, prod, raw, 10, "2026-01-02");
+  await deliver(db, o1, prod, 10, "2026-01-03");
+  await setOverhead(db, prod, 80);
+  await db.sql`update work_deliveries set quantity = ${8} where user_id = ${U}`; // as applyDeliveryPlan does
+  const inv = await loadInventoryValuation(db.sql, U);
+  assert.equal(inv.products.find((c) => c.itemId === prod)!.valueBase, 8 * 130);
   await db.close();
 });
