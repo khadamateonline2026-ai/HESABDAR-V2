@@ -41,7 +41,7 @@ function ResetRolePinPage() {
   const roles = [
     { id: "accountant", label: "حسابدار" },
     { id: "seller", label: "فروشنده" },
-    { id: "supervisor", label: "ناظر" },
+    // ناظر کد ندارد
   ];
   const primary =
     "mt-1 flex h-11 w-full items-center justify-center rounded-sm bg-primary text-sm font-medium text-primary-fg hover:bg-primary/90 disabled:opacity-55";

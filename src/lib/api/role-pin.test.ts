@@ -82,12 +82,12 @@ test("SEC-03 fix: parallel guesses cannot exceed the limit", async () => {
 });
 
 test("SEC-03 fix: a legacy plaintext PIN works once and is re-hashed; public defaults never work", async () => {
-  const db = await setup({ supervisor: "12345", accountant: "7788", seller: hashPin("3333") });
+  const db = await setup({ supervisor: hashPin("1111"), accountant: "7788", seller: "12345" });
   await verifyAccountantPin(db.sql, "u1", "7788");
   const row = (await db.sql<{ role_code_accountant: string }>`select role_code_accountant from app_settings`)[0];
   assert.ok(isHashedPin(row.role_code_accountant), "stored as scrypt hash now");
   await verifyAccountantPin(db.sql, "u1", "7788");
-  await assert.rejects(verifyRolePin(db.sql, "u1", "supervisor", "12345"), /نادرست/);
+  await assert.rejects(verifyRolePin(db.sql, "u1", "seller", "12345"), /نادرست/);
   await db.close();
 });
 
@@ -107,4 +107,38 @@ test("SEC-03 invariant: every PIN path uses the DB limiter", () => {
     assert.doesNotMatch(src, /role-rate-limit|recordRoleFail|getRoleCodes\(sql, context\.userId\);\s*\n\s*assert/, f);
     assert.doesNotMatch(src.replace(/import[^;]+;/g, ""), /\bverifyPin\(/, `${f} must not call verifyPin directly`);
   }
+});
+
+test("ناظر بدون کد: supervisor needs no PIN (any/empty code, no limiter); accountant and seller still need theirs", async () => {
+  const db = await setup(hashed());
+  for (const code of ["", "anything", "1111"]) await verifyRolePin(db.sql, "u1", "supervisor", code);
+  assert.equal(Number((await state(db)).role_fail_count ?? 0), 0, "supervisor entry never counts as an attempt");
+  // Even while the workspace is locked for wrong PINs, supervisor can enter (no PIN is checked).
+  for (let i = 0; i < ROLE_PIN_MAX_FAILS; i += 1) await assert.rejects(verifyRolePin(db.sql, "u1", "accountant", "0000"));
+  assert.ok((await state(db)).role_lock_until, "accountant/seller lockout still applies");
+  await assert.rejects(verifyRolePin(db.sql, "u1", "seller", "3333"), /قفل/);
+  await verifyRolePin(db.sql, "u1", "supervisor", "");
+  await db.sql`update app_settings set role_lock_until = null, role_fail_count = 0`;
+  await assert.rejects(verifyRolePin(db.sql, "u1", "accountant", ""), /نادرست/);
+  await assert.rejects(verifyRolePin(db.sql, "u1", "seller", ""), /نادرست/);
+  await verifyRolePin(db.sql, "u1", "accountant", "2468");
+  await verifyRolePin(db.sql, "u1", "seller", "3333");
+  // The stored supervisor code is kept, only ignored.
+  const row = (await db.sql<{ role_code_supervisor: string }>`select role_code_supervisor from app_settings`)[0];
+  assert.ok(verifyPin("1111", row.role_code_supervisor));
+  await db.close();
+});
+
+test("ناظر بدون کد: UI offers «ورود بدون تعیین نقش», settings drop the supervisor PIN field but keep its stored code", () => {
+  const read = (p: string) => readFileSync(join(process.cwd(), p), "utf8");
+  const gate = read("src/components/onboarding.tsx");
+  assert.match(gate, /ورود بدون تعیین نقش/);
+  assert.match(gate, /enter\("supervisor", false\)/);
+  assert.match(gate, /roleNeedsPin\(role\) \? \(/, "PIN field hidden for supervisor");
+  const settings = read("src/routes/_app/settings.tsx");
+  assert.doesNotMatch(settings, /codes\.supervisor/);
+  const ws = read("src/lib/api/workspace.ts");
+  assert.match(ws, /role_code_supervisor = coalesce\(excluded\.role_code_supervisor, app_settings\.role_code_supervisor\)/);
+  const core = read("src/lib/api/core.ts");
+  assert.match(core, /await verifyRolePin\(sql, context\.userId, data\.role, data\.code\)/, "changeRole still checks via the limiter");
 });

@@ -64,25 +64,26 @@ export const saveAppearance = createServerFn({ method: "POST" })
 
 export const saveRoleCodes = createServerFn({ method: "POST" })
   .middleware([authMiddleware])
-  .validator((d: { supervisor: string; accountant: string; seller: string }) => validInput(d))
+  .validator((d: { supervisor?: string; accountant: string; seller: string }) => validInput(d))
   .handler(async ({ context, data }) => {
     const sql = await sqlOf();
     await requireManageRoleCodes(sql, context.userId);
-    const supervisor = data.supervisor.trim();
+    // ناظر کد ندارد: کد قبلی ناظر (اگر هست) دست نمی‌خورد؛ فقط حسابدار و فروشنده.
+    const supervisor = (data.supervisor ?? "").trim();
     const accountant = data.accountant.trim();
     const seller = data.seller.trim();
-    if (!supervisor || !accountant || !seller) throw new Error("رمز هر سه نقش لازم است");
-    assertPinShape(supervisor);
+    if (!accountant || !seller) throw new Error("کد حسابدار و فروشنده لازم است");
+    if (supervisor) assertPinShape(supervisor);
     assertPinShape(accountant);
     assertPinShape(seller);
-    const hs = hashPin(supervisor);
+    const hs = supervisor ? hashPin(supervisor) : null;
     const ha = hashPin(accountant);
     const hsel = hashPin(seller);
     await sql`
       insert into app_settings (user_id, role_code_supervisor, role_code_accountant, role_code_seller, role_codes_hashed)
       values (${context.userId}, ${hs}, ${ha}, ${hsel}, ${true})
       on conflict (user_id) do update set
-        role_code_supervisor = excluded.role_code_supervisor,
+        role_code_supervisor = coalesce(excluded.role_code_supervisor, app_settings.role_code_supervisor),
         role_code_accountant = excluded.role_code_accountant,
         role_code_seller = excluded.role_code_seller,
         role_codes_hashed = true,

@@ -16,7 +16,7 @@
  */
 import { hashPin, isHashedPin, legacyPlainMatches, verifyPin } from "@/lib/auth/pin-hash";
 import type { Sql } from "@/lib/db";
-import type { Role } from "@/lib/types";
+import { roleNeedsPin, type Role } from "@/lib/types";
 
 export const ROLE_PIN_MAX_FAILS = 5;
 export const ROLE_FAIL_WINDOW_MIN = 15;
@@ -134,6 +134,9 @@ export async function verifyRolePin(
   wrongMessage = "کد نقش نادرست است",
 ): Promise<void> {
   if (!ROLES.includes(role)) throw new Error("نقش نادرست است");
+  // ناظر (فقط مشاهده) کد ندارد: «ورود بدون تعیین نقش». کد ذخیره‌شده‌اش دست نمی‌خورد
+  // و نادیده گرفته می‌شود. بقیه نقش‌ها مثل قبل کد و قفل تلاش ناموفق دارند.
+  if (!roleNeedsPin(role)) return;
   const pin = (code ?? "").trim();
   let legacy: string | null = null;
   await attemptRoleSecret(

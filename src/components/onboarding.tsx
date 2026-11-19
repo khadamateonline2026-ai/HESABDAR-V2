@@ -6,7 +6,7 @@ import { changeRole, clearSessionRole, completeOnboarding, requestRoleReset } fr
 import { signOut } from "@/lib/auth/client";
 import { queryClient } from "@/lib/query-client";
 import { clearRoleToken, setRoleToken } from "@/lib/session-role-client";
-import { ROLE_LABELS, type Role, type StaffUser } from "@/lib/types";
+import { ROLE_LABELS, roleNeedsPin, type Role, type StaffUser } from "@/lib/types";
 
 /** Clears client + httpOnly role cookie so RoleGate opens on the next login. */
 export async function clearRoleSession() {
@@ -30,7 +30,8 @@ function suggestCode() {
 export function OnboardingModal({ open }: { open: boolean; userId: string }) {
   const [displayName, setDisplayName] = useState("");
   const [companyEmail, setCompanyEmail] = useState("");
-  const [supervisor, setSupervisor] = useState(suggestCode);
+  // ناظر کد ندارد (ورود بدون تعیین نقش)؛ یک کد تصادفی فقط برای سازگاری ذخیره می‌شود و هرگز پرسیده نمی‌شود.
+  const [supervisor] = useState(suggestCode);
   const [accountant, setAccountant] = useState(suggestCode);
   const [seller, setSeller] = useState(suggestCode);
   const [error, setError] = useState("");
@@ -56,7 +57,7 @@ export function OnboardingModal({ open }: { open: boolean; userId: string }) {
   return (
     <Modal open={open} title="تنظیم نقش" onClose={() => undefined} hideClose>
       <form onSubmit={submit} className="space-y-3">
-        <p className="text-sm text-muted">برای هر نقش یک رمز انتخاب کنید. پیشنهاد برنامه را می‌توانید عوض کنید.</p>
+        <p className="text-sm text-muted">برای حسابدار و فروشنده یک رمز انتخاب کنید. پیشنهاد برنامه را می‌توانید عوض کنید. ناظر رمز ندارد.</p>
         <Field label="نام">
           <Input
             value={displayName}
@@ -73,9 +74,6 @@ export function OnboardingModal({ open }: { open: boolean; userId: string }) {
         </Field>
         <Field label={ROLE_LABELS.seller}>
           <Input dir="ltr" value={seller} onChange={(e) => setSeller(e.target.value)} required />
-        </Field>
-        <Field label={ROLE_LABELS.supervisor}>
-          <Input dir="ltr" value={supervisor} onChange={(e) => setSupervisor(e.target.value)} required />
         </Field>
         {error ? <p className="text-sm text-danger">{error}</p> : null}
         <Button type="submit" disabled={busy} className="w-full">
@@ -106,14 +104,13 @@ export function RoleGateModal({
   const [forgot, setForgot] = useState(false);
   const [sentTo, setSentTo] = useState("");
 
-  async function submit(e: React.FormEvent) {
-    e.preventDefault();
+  async function enter(asRole: Role, needName: boolean) {
     setBusy(true);
     setError("");
     try {
       const displayName = name.trim();
-      if (!displayName) throw new Error("اسم لازم است");
-      const res = await changeRole({ data: { role, code, displayName } });
+      if (needName && !displayName) throw new Error("اسم لازم است");
+      const res = await changeRole({ data: { role: asRole, code: roleNeedsPin(asRole) ? code : "", displayName } });
       if (res.roleToken) setRoleToken(res.roleToken);
       // SEC-02: pages load their data only after the role is unlocked.
       await queryClient.invalidateQueries();
@@ -123,6 +120,11 @@ export function RoleGateModal({
     } finally {
       setBusy(false);
     }
+  }
+
+  async function submit(e: React.FormEvent) {
+    e.preventDefault();
+    await enter(role, true);
   }
 
   return (
@@ -152,6 +154,9 @@ export function RoleGateModal({
         {error ? <p className="text-sm text-danger">{error}</p> : null}
         <Button type="submit" disabled={busy} className="w-full">
           {busy ? "…" : "ورود با این نقش"}
+        </Button>
+        <Button type="button" variant="secondary" disabled={busy} className="w-full" onClick={() => void enter("supervisor", false)}>
+          ورود بدون تعیین نقش
         </Button>
         <button
           type="button"
@@ -217,15 +222,17 @@ function RoleFields({
           ))}
         </select>
       </Field>
-      <Field label="کد نقش">
-        <Input
-          dir="ltr"
-          inputMode="numeric"
-          value={code}
-          onChange={(e) => onCode(e.target.value)}
-          required
-        />
-      </Field>
+      {roleNeedsPin(role) ? (
+        <Field label="کد نقش">
+          <Input
+            dir="ltr"
+            inputMode="numeric"
+            value={code}
+            onChange={(e) => onCode(e.target.value)}
+            required
+          />
+        </Field>
+      ) : null}
     </>
   );
 }

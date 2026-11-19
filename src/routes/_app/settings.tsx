@@ -33,7 +33,7 @@ import { saveProductionEnabled } from "@/lib/api/setup";
 import { canManageRoleCodes, canViewRoleCodes, canWrite } from "@/lib/permissions";
 import { applyAppearance, ensureThemeContrast, paintTraderban } from "@/lib/prefs";
 import { queryClient } from "@/lib/query-client";
-import { DEFAULT_SETTINGS, ROLE_LABELS, type AppSettings, type ColorPreset, type Role, type StaffUser } from "@/lib/types";
+import { DEFAULT_SETTINGS, ROLE_LABELS, roleNeedsPin, type AppSettings, type ColorPreset, type Role, type StaffUser } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
 export const Route = createFileRoute("/_app/settings")({ component: Page });
@@ -755,16 +755,8 @@ function SecurityCard({
           <p className="text-xs text-muted leading-relaxed">
             کدهای نقش به‌صورت هش ذخیره می‌شوند و هرگز به‌صورت خوانا نمایش داده نمی‌شوند. برای تغییر، کد جدید را وارد کنید.
           </p>
-          <div className="grid grid-cols-3 gap-2">
-            <Field label={ROLE_LABELS.supervisor}>
-              <Input
-                dir="ltr"
-                value={codes.supervisor}
-                disabled={!manageCodes}
-                placeholder={manageCodes ? "" : "••••"}
-                onChange={(e) => setCodes((c) => ({ ...c, supervisor: e.target.value }))}
-              />
-            </Field>
+          {/* ناظر کد ندارد (ورود بدون تعیین نقش)؛ کد قبلی‌اش پاک نمی‌شود، فقط نادیده گرفته می‌شود */}
+          <div className="grid grid-cols-2 gap-2">
             <Field label={ROLE_LABELS.accountant}>
               <Input
                 dir="ltr"
@@ -787,7 +779,7 @@ function SecurityCard({
           {manageCodes ? (
             <Button
               onClick={async () => {
-                const saved = await saveRoleCodes({ data: codes });
+                const saved = await saveRoleCodes({ data: { accountant: codes.accountant, seller: codes.seller } });
                 // SEC-04: old role sessions are revoked; keep this one with its fresh token.
                 if (saved.roleToken) setRoleToken(saved.roleToken);
                 await queryClient.invalidateQueries({ queryKey: ["bootstrap"] });
@@ -895,9 +887,11 @@ function NameRoleQuick() {
             ))}
           </select>
         </Field>
-        <Field label="کد نقش">
-          <Input dir="ltr" value={code} onChange={(e) => setCode(e.target.value)} />
-        </Field>
+        {roleNeedsPin(role) ? (
+          <Field label="کد نقش">
+            <Input dir="ltr" value={code} onChange={(e) => setCode(e.target.value)} />
+          </Field>
+        ) : null}
       </div>
       <div className="flex flex-wrap gap-2">
         {writable ? (
@@ -913,7 +907,7 @@ function NameRoleQuick() {
         ) : null}
         <Button
           onClick={async () => {
-            const res = await changeRole({ data: { role, code } });
+            const res = await changeRole({ data: { role, code: roleNeedsPin(role) ? code : "" } });
             if (res.roleToken) setRoleToken(res.roleToken);
             await queryClient.invalidateQueries({ queryKey: ["bootstrap"] });
             setCode("");
@@ -938,9 +932,9 @@ function StaffForm({ title, initial, onClose }: { title: string; initial?: Staff
         onSubmit={async (e) => {
           e.preventDefault();
           if (initial) {
-            await updateStaffUser({ data: { id: initial.id, displayName: name, role, code } });
+            await updateStaffUser({ data: { id: initial.id, displayName: name, role, code: roleNeedsPin(role) ? code : "" } });
           } else {
-            await addStaffUser({ data: { displayName: name, role, code } });
+            await addStaffUser({ data: { displayName: name, role, code: roleNeedsPin(role) ? code : "" } });
           }
           await queryClient.invalidateQueries({ queryKey: ["bootstrap"] });
           toast.success("ثبت شد");
@@ -959,9 +953,11 @@ function StaffForm({ title, initial, onClose }: { title: string; initial?: Staff
             ))}
           </select>
         </Field>
-        <Field label="کد نقش">
-          <Input dir="ltr" value={code} onChange={(e) => setCode(e.target.value)} required />
-        </Field>
+        {roleNeedsPin(role) ? (
+          <Field label="کد نقش">
+            <Input dir="ltr" value={code} onChange={(e) => setCode(e.target.value)} required />
+          </Field>
+        ) : null}
         <Button type="submit">ثبت</Button>
       </form>
     </Modal>

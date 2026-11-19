@@ -696,6 +696,11 @@ export const ROLE_LABELS: Record<Role, string> = {
   seller: "فروشنده",
 };
 
+/** ناظر (فقط مشاهده) کد نقش ندارد؛ بقیه نقش‌ها کد دارند. */
+export function roleNeedsPin(role: Role): boolean {
+  return role !== "supervisor";
+}
+
 export const DEFAULT_SETTINGS: AppSettings = {
   theme: "dark",
   fontSize: 16,

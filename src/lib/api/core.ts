@@ -241,7 +241,8 @@ export const changeRole = createServerFn({ method: "POST" })
       }
     }
     const slot = peekSessionRole();
-    const name = typedName || slot?.displayName || owner.displayName;
+    // «ورود بدون تعیین نقش» (ناظر بدون اسم): نام نمایشی «ناظر»
+    const name = typedName || slot?.displayName || (data.role === "supervisor" ? "ناظر" : owner.displayName);
     const { signRoleToken, setRoleCookie } = await import("@/lib/auth/session-role.server");
     const roleToken = signRoleToken(context.userId, data.role, name, await getRolePinVersion(sql, context.userId));
     await setRoleCookie(roleToken);
