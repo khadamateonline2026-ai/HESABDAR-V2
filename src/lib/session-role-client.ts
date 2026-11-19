@@ -6,8 +6,8 @@
 const KEY = "hesabdar-role-token";
 const COOKIE = "hesabdar_role";
 const LEGACY_KEY = "dftar-role-session";
-/** 12 hours — matches server token exp */
-const MAX_AGE_SEC = 12 * 60 * 60;
+/** 180 days — matches server token exp (role stays until sign-out) */
+const MAX_AGE_SEC = 180 * 24 * 60 * 60;
 
 let memory: string | null = null;
 

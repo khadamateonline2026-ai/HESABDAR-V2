@@ -52,7 +52,9 @@ export const authMiddleware = createMiddleware({ type: "function" })
     const userId = await requireUserId(context.bearerToken);
     // SEC-05: never run another user's queued offline write under this session.
     assertOfflineOwner(userId);
-    const { bindSessionRole, readRoleToken, slotIfCurrent } = await import("./session-role.server");
+    const { bindSessionRole, needsRefresh, readRoleToken, setRoleCookie, signRoleToken, slotIfCurrent } = await import(
+      "./session-role.server"
+    );
     let roleToken = context.roleToken;
     if (!roleToken) {
       try {
@@ -68,7 +70,12 @@ export const authMiddleware = createMiddleware({ type: "function" })
     if (claims) {
       // SEC-04: a role PIN changed/reset since this token was issued -> drop it.
       const { currentRolePinVersion } = await import("./role-version.server");
-      slot = slotIfCurrent(claims, await currentRolePinVersion(userId));
+      const pinVersion = await currentRolePinVersion(userId);
+      slot = slotIfCurrent(claims, pinVersion);
+      // Role stays until sign-out: refresh the long-lived cookie while it is used.
+      if (slot && needsRefresh(claims)) {
+        await setRoleCookie(signRoleToken(userId, slot.role, slot.displayName, pinVersion));
+      }
     }
     return bindSessionRole(slot, () => next({ context: { userId } }));
   });

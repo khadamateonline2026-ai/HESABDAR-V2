@@ -26,7 +26,9 @@ test("clearRoleSession awaits server clear; logout and login call it", () => {
 
 test("role cookie remains httpOnly with TTL; PIN hashing still used", () => {
   assert.match(sessionRole, /httpOnly:\s*true/);
-  assert.match(sessionRole, /TOKEN_TTL_MS = 12 \* 60 \* 60 \* 1000/);
+  // Role stays until sign-out: long expiry, refreshed on use.
+  assert.match(sessionRole, /TOKEN_TTL_MS = 180 \* 24 \* 60 \* 60 \* 1000/);
+  assert.match(sessionRole, /export function needsRefresh/);
   assert.match(core, /verifyRolePin/); // SEC-03: PIN checks go through the DB limiter (role-pin.ts)
   assert.match(core, /hashPin/);
 });

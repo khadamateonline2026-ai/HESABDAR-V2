@@ -12,7 +12,15 @@ import type { SessionRoleSlot } from "@/lib/session-role-slot";
 type Payload = { u: string; r: Role; n: string; v: 3; pv: number; exp: number };
 
 const als = new AsyncLocalStorage<SessionRoleSlot | null>();
-const TOKEN_TTL_MS = 12 * 60 * 60 * 1000;
+/**
+ * The chosen role stays until sign-out (sign-out / login page clear the cookie).
+ * Long expiry, refreshed on use (see `needsRefresh`), so closing and reopening
+ * the app (PWA too) does not ask for the role again. A PIN change/reset still
+ * revokes every role session through `pv`.
+ */
+const TOKEN_TTL_MS = 180 * 24 * 60 * 60 * 1000;
+/** Re-issue the token (fresh 180 days) once it is older than a day. */
+const REFRESH_AFTER_MS = 24 * 60 * 60 * 1000;
 
 const g = globalThis as typeof globalThis & {
   __hesabdarRoleAls?: AsyncLocalStorage<SessionRoleSlot | null>;
@@ -57,7 +65,7 @@ export function signRoleToken(userId: string, role: Role, displayName: string, p
 }
 
 /** Verified token contents, including the PIN version it was issued for. */
-export type RoleTokenClaims = SessionRoleSlot & { pinVersion: number };
+export type RoleTokenClaims = SessionRoleSlot & { pinVersion: number; exp: number };
 
 export function readRoleToken(token: string | null | undefined, userId: string): RoleTokenClaims | null {
   if (!token || !userId) return null;
@@ -80,6 +88,7 @@ export function readRoleToken(token: string | null | undefined, userId: string):
       role: parsed.r,
       displayName: cleanName(typeof parsed.n === "string" ? parsed.n : ""),
       pinVersion: parsed.pv,
+      exp: parsed.exp,
     };
   } catch {
     return null;
@@ -90,6 +99,11 @@ export function readRoleToken(token: string | null | undefined, userId: string):
 export function slotIfCurrent(claims: RoleTokenClaims | null, currentVersion: number): SessionRoleSlot | null {
   if (!claims || claims.pinVersion !== currentVersion) return null;
   return { role: claims.role, displayName: claims.displayName };
+}
+
+/** True when a still-valid token was issued more than a day ago (sliding expiry). */
+export function needsRefresh(claims: Pick<RoleTokenClaims, "exp">, now = Date.now()): boolean {
+  return claims.exp - now < TOKEN_TTL_MS - REFRESH_AFTER_MS;
 }
 
 export async function setRoleCookie(token: string): Promise<void> {

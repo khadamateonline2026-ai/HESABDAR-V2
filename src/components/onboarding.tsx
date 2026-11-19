@@ -128,7 +128,7 @@ export function RoleGateModal({
   return (
     <Modal open={open} title="نقش کاربری" onClose={() => undefined} hideClose>
       <form onSubmit={submit} className="space-y-3">
-        <p className="text-sm text-muted">پس از هر ورود، اسم، نقش و کد نقش را وارد کنید.</p>
+        <p className="text-sm text-muted">اسم، نقش و کد نقش را وارد کنید. تا خروج از حساب دوباره پرسیده نمی‌شود.</p>
         <Field label="اسم">
           <Input
             value={name}

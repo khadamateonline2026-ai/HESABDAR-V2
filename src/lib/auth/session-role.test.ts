@@ -3,13 +3,15 @@ import test from "node:test";
 import { createHmac } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { readRoleToken, signRoleToken, slotIfCurrent } from "./session-role.server.ts";
+import { needsRefresh, readRoleToken, ROLE_TOKEN_TTL_MS, signRoleToken, slotIfCurrent } from "./session-role.server.ts";
 
 test("signs and reads role token for matching user", () => {
   process.env.BETTER_AUTH_SECRET = "test-secret-for-session-role-unit";
   const token = signRoleToken("u1", "accountant", "علی", 1);
   const slot = readRoleToken(token, "u1");
-  assert.deepEqual(slot, { role: "accountant", displayName: "علی", pinVersion: 1 });
+  assert.ok(slot);
+  const { exp: _exp, ...rest } = slot;
+  assert.deepEqual(rest, { role: "accountant", displayName: "علی", pinVersion: 1 });
   assert.equal(readRoleToken(token, "other"), null);
 });
 
@@ -50,5 +52,30 @@ test("SEC-04 invariant: every PIN change bumps role_pin_version and middleware c
   // DEL-03: the old email-code reset (applyRoleReset) was removed; the reset link is the only path.
   assert.equal((core.match(/role_pin_version = role_pin_version \+ 1/g) ?? []).length, 1, "reset link");
   assert.match(read("src/lib/api/workspace.ts"), /role_pin_version = app_settings\.role_pin_version \+ 1/);
-  assert.match(read("src/lib/auth/middleware.ts"), /slotIfCurrent\(claims, await currentRolePinVersion\(userId\)\)/);
+  assert.match(read("src/lib/auth/middleware.ts"), /const pinVersion = await currentRolePinVersion\(userId\);\s*slot = slotIfCurrent\(claims, pinVersion\)/);
+});
+
+test("role stays until sign-out: 180-day token, refreshed on use, still expires if never used", () => {
+  process.env.BETTER_AUTH_SECRET = "test-secret-for-session-role-unit";
+  const DAY = 24 * 60 * 60 * 1000;
+  assert.equal(ROLE_TOKEN_TTL_MS, 180 * DAY);
+  const before = Date.now();
+  const claims = readRoleToken(signRoleToken("u1", "seller", "ب", 3), "u1")!;
+  assert.ok(claims.exp >= before + 180 * DAY - 1000, "lasts ~180 days, not 12 hours");
+  // Reopening the app hours/days later still finds a valid role.
+  assert.equal(needsRefresh(claims, before + 60 * 60 * 1000), false, "no re-issue within the first day");
+  assert.equal(needsRefresh(claims, before + 2 * DAY), true, "re-issued (sliding) after a day of use");
+  // An unused token past its expiry is refused (the role is asked again).
+  const old = legacyToken({ u: "u1", r: "seller", n: "x", v: 3, pv: 3, exp: Date.now() - 1 });
+  assert.equal(readRoleToken(old, "u1"), null);
+});
+
+test("middleware refreshes the role cookie and sign-out still clears it", () => {
+  const mw = readFileSync(join(process.cwd(), "src/lib/auth/middleware.ts"), "utf8");
+  assert.match(mw, /if \(slot && needsRefresh\(claims\)\)/);
+  assert.match(mw, /setRoleCookie\(signRoleToken\(userId, slot\.role, slot\.displayName, pinVersion\)\)/);
+  const onboarding = readFileSync(join(process.cwd(), "src/components/onboarding.tsx"), "utf8");
+  assert.match(onboarding, /export async function logoutNow\(\) \{\s*await clearRoleSession\(\);/);
+  const client = readFileSync(join(process.cwd(), "src/lib/session-role-client.ts"), "utf8");
+  assert.match(client, /MAX_AGE_SEC = 180 \* 24 \* 60 \* 60/);
 });
