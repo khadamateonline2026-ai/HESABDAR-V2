@@ -1004,6 +1004,18 @@ export async function lockStock(sql: Sql, userId: string): Promise<void> {
   await sql.query("select pg_advisory_xact_lock(hashtext($1))", [`${userId}:stock`]);
 }
 
+/**
+ * سربار هر واحد (سایر مصارف کالا) به ارز اصلی، همان لحظه تحویل.
+ * روی هر تحویل ذخیره می‌شود تا تغییر بعدی سربار، اسناد قبلی را تغییر ندهد.
+ */
+export async function overheadPerUnitBase(sql: Sql, userId: string, productId: number): Promise<number> {
+  const rows = await sql<{ total: unknown }>`
+    select coalesce(sum(amount), 0) as total from item_overheads
+    where user_id = ${userId} and item_id = ${productId}
+  `;
+  return num(rows[0]?.total);
+}
+
 export async function loadInventoryState(sql: Sql, userId: string): Promise<InventoryState> {
   const { saleCosts: _costs, ...state } = await loadInventoryValuation(sql, userId);
   return state;
@@ -1095,6 +1107,11 @@ export async function loadInventoryValuation(
       quantity: num(row.qty_per_unit),
     });
     allocByOrder.set(oid, arr);
+  }
+
+  function overheadOf(d: Record<string, unknown>, productId: number): number {
+    if (d.overhead_per_unit_base != null) return num(d.overhead_per_unit_base);
+    return (overheadsByProduct[productId] ?? []).reduce((s, extra) => s + extra.amount, 0);
   }
 
   function recipeLines(orderId: number, productId: number) {
@@ -1202,7 +1219,8 @@ export async function loadInventoryValuation(
           const need = line.quantity * qty;
           cost += takeLot(worker, k, need);
         }
-        for (const extra of overheadsByProduct[productId] ?? []) cost += extra.amount * qty;
+        // سربار ثبت‌شده روی همین تحویل؛ تحویل‌های بدون مقدار (بک‌آپ قدیمی) با سربار فعلی.
+        cost += overheadOf(d, productId) * qty;
         addLot(product, pk, qty, cost);
       },
     });

@@ -1,0 +1,154 @@
+import "@/lib/testing/test-env";
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+import { applyMigrations, createTestDb, seedUser, type TestDb } from "@/lib/testing/pglite-db";
+import { loadInventoryValuation, overheadPerUnitBase } from "./helpers";
+
+const U = "user-snap";
+
+function handlerSource(file: string, name: string): string {
+  const src = readFileSync(join(process.cwd(), "src/lib/api", file), "utf8");
+  const start = src.indexOf(`export const ${name} =`);
+  assert.ok(start >= 0, `${file}: ${name} not found`);
+  const next = src.indexOf("\nexport ", start + 1);
+  return src.slice(start, next < 0 ? undefined : next);
+}
+
+async function item(db: TestDb, name: string, kind: "raw" | "product", purchasePrice = 0) {
+  const r = await db.sql<{ id: number }>`
+    insert into items (user_id, name, kind, purchase_price) values (${U}, ${name}, ${kind}, ${purchasePrice}) returning id
+  `;
+  return r[0].id;
+}
+
+async function buy(db: TestDb, cur: number, itemId: number, name: string, qty: number, price: number, on: string) {
+  await db.sql`
+    insert into purchases (user_id, item_id, item_name, quantity, received_qty, unit_price, currency_id, occurred_on, status)
+    values (${U}, ${itemId}, ${name}, ${qty}, ${qty}, ${price}, ${cur}, ${on}, ${"final"})
+  `;
+}
+
+async function sell(db: TestDb, cur: number, itemId: number, name: string, qty: number, on: string, refCost?: number | null) {
+  const r =
+    refCost === undefined
+      ? await db.sql<{ id: number }>`
+          insert into sales (user_id, item_id, item_name, quantity, unit_price, currency_id, occurred_on, status)
+          values (${U}, ${itemId}, ${name}, ${qty}, ${1000}, ${cur}, ${on}, ${"final"}) returning id
+        `
+      : await db.sql<{ id: number }>`
+          insert into sales (user_id, item_id, item_name, quantity, unit_price, currency_id, occurred_on, status, ref_unit_cost_base)
+          values (${U}, ${itemId}, ${name}, ${qty}, ${1000}, ${cur}, ${on}, ${"final"}, ${refCost}) returning id
+        `;
+  return r[0].id;
+}
+
+/** Order of `qty` products using 2 units of raw each (recipe snapshotted like createWorkOrder). */
+async function order(db: TestDb, productId: number, rawId: number, qty: number, on: string) {
+  const r = await db.sql<{ id: number }>`
+    insert into work_orders (user_id, product_id, product_name, quantity, delivered_qty, occurred_on)
+    values (${U}, ${productId}, ${"پیراهن"}, ${qty}, ${0}, ${on}) returning id
+  `;
+  await db.sql`update work_orders set root_id = id where id = ${r[0].id}`;
+  await db.sql`
+    insert into work_order_alloc (user_id, work_order_id, raw_item_id, raw_item_name, qty_per_unit, allocated_qty)
+    values (${U}, ${r[0].id}, ${rawId}, ${"پارچه"}, ${2}, ${2 * qty})
+  `;
+  return r[0].id;
+}
+
+/** Delivery to the warehouse; `snapshot` mirrors deliverWorkOrder (overhead frozen at delivery). */
+async function deliver(db: TestDb, orderId: number, productId: number, qty: number, on: string, snapshot = true) {
+  const overhead = snapshot ? await overheadPerUnitBase(db.sql, U, productId) : null;
+  await db.sql`
+    insert into work_deliveries (user_id, work_order_id, quantity, occurred_on, notes, overhead_per_unit_base)
+    values (${U}, ${orderId}, ${qty}, ${on}, ${""}, ${overhead})
+  `;
+}
+
+async function setOverhead(db: TestDb, productId: number, amount: number) {
+  await db.sql`delete from item_overheads where user_id = ${U} and item_id = ${productId}`;
+  await db.sql`insert into item_overheads (user_id, item_id, title, amount) values (${U}, ${productId}, ${"دوخت"}, ${amount})`;
+}
+
+test("deliverWorkOrder stores the overhead per unit on every delivery it inserts", () => {
+  const body = handlerSource("inventory.ts", "deliverWorkOrder");
+  assert.ok(body.includes("overheadPerUnitBase(sql, context.userId"), "overhead must be read at delivery time");
+  const inserts = body.split("insert into work_deliveries").slice(1);
+  assert.equal(inserts.length, 2);
+  for (const ins of inserts) assert.ok(ins.slice(0, 400).includes("overhead_per_unit_base"));
+});
+
+test("changing a product's overhead keeps past deliveries and past sales profit; new deliveries use the new overhead", async () => {
+  const db = await createTestDb();
+  const ids = await db.tx((sql) => seedUser(sql, U));
+  const raw = await item(db, "پارچه", "raw");
+  const prod = await item(db, "پیراهن", "product");
+  await buy(db, ids.afnId, raw, "پارچه", 100, 50, "2026-01-01");
+  await setOverhead(db, prod, 30);
+  const o1 = await order(db, prod, raw, 10, "2026-01-02");
+  await deliver(db, o1, prod, 10, "2026-01-03"); // unit = 2×50 + 30 = 130
+  const s1 = await sell(db, ids.afnId, prod, "پیراهن", 4, "2026-01-04");
+  const before = await loadInventoryValuation(db.sql, U);
+  assert.equal(before.saleCosts[s1], 520);
+  assert.equal(before.products.find((c) => c.itemId === prod)!.valueBase, 780);
+
+  await setOverhead(db, prod, 80); // overhead edited later
+  const after = await loadInventoryValuation(db.sql, U);
+  // Old code: 4 × (100 + 80) = 720 — the past sale's profit changed.
+  assert.equal(after.saleCosts[s1], 520);
+  assert.equal(after.products.find((c) => c.itemId === prod)!.valueBase, 780);
+
+  const o2 = await order(db, prod, raw, 10, "2026-01-05");
+  await deliver(db, o2, prod, 10, "2026-01-06"); // unit = 100 + 80 = 180
+  const s2 = await sell(db, ids.afnId, prod, "پیراهن", 16, "2026-01-07");
+  const later = await loadInventoryValuation(db.sql, U);
+  assert.equal(later.saleCosts[s1], 520);
+  // WAC after second delivery: (6×130 + 10×180) / 16 = 161.25 → 16 × 161.25
+  assert.equal(later.saleCosts[s2], 2580);
+  await db.close();
+});
+
+test("deliveries without a stored overhead (old backups) still use the current overhead", async () => {
+  const db = await createTestDb();
+  const ids = await db.tx((sql) => seedUser(sql, U));
+  const raw = await item(db, "پارچه", "raw");
+  const prod = await item(db, "پیراهن", "product");
+  await buy(db, ids.afnId, raw, "پارچه", 100, 50, "2026-01-01");
+  await setOverhead(db, prod, 30);
+  const o1 = await order(db, prod, raw, 10, "2026-01-02");
+  await deliver(db, o1, prod, 10, "2026-01-03", false);
+  const inv = await loadInventoryValuation(db.sql, U);
+  assert.equal(inv.products.find((c) => c.itemId === prod)!.valueBase, 1300);
+  await db.close();
+});
+
+test("migration 0040 freezes existing deliveries at the overhead in force at deploy: no number changes", async () => {
+  const db = await createTestDb({ upTo: "0039_sale_warehouse.sql" });
+  const ids = await db.tx((sql) => seedUser(sql, U));
+  const raw = await item(db, "پارچه", "raw");
+  const prod = await item(db, "پیراهن", "product");
+  await buy(db, ids.afnId, raw, "پارچه", 100, 50, "2026-01-01");
+  await setOverhead(db, prod, 30);
+  const o1 = await order(db, prod, raw, 10, "2026-01-02");
+  await db.sql`
+    insert into work_deliveries (user_id, work_order_id, quantity, occurred_on, notes)
+    values (${U}, ${o1}, ${10}, ${"2026-01-03"}, ${""})
+  `;
+  const r = await db.sql<{ id: number }>`
+    insert into sales (user_id, item_id, item_name, quantity, unit_price, currency_id, occurred_on, status)
+    values (${U}, ${prod}, ${"پیراهن"}, ${4}, ${1000}, ${ids.afnId}, ${"2026-01-04"}, ${"final"}) returning id
+  `;
+  await applyMigrations(db.pg);
+  const atDeploy = await loadInventoryValuation(db.sql, U);
+  assert.equal(atDeploy.saleCosts[r[0].id], 520);
+  const row = await db.sql<{ v: string }>`select overhead_per_unit_base as v from work_deliveries`;
+  assert.equal(Number(row[0].v), 30);
+  await setOverhead(db, prod, 80);
+  const later = await loadInventoryValuation(db.sql, U);
+  assert.equal(later.saleCosts[r[0].id], 520);
+  // The current cost estimate for new production follows the new overhead.
+  assert.equal(await overheadPerUnitBase(db.sql, U, prod), 80);
+  await db.close();
+});

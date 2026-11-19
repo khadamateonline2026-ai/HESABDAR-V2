@@ -4,7 +4,7 @@ import { authMiddleware } from "@/lib/auth/middleware";
 import { formatMoney, nextInvoiceNo, num, text } from "@/lib/format";
 import type { InventoryData, ProductionStage, WorkOrder } from "@/lib/types";
 import { isLastStage } from "@/lib/types";
-import { loadInventoryState, lockStock, requireWriteAny, sqlOf, assertUniqueItemName, wageForProduct, assertAccountantPin } from "./helpers";
+import { loadInventoryState, lockStock, requireWriteAny, sqlOf, assertUniqueItemName, wageForProduct, assertAccountantPin, overheadPerUnitBase } from "./helpers";
 import { encodeUsageError, type UsageFocus } from "@/lib/usage-focus";
 import { assertOwned } from "./ownership";
 import { idempotent } from "./idempotency";
@@ -517,6 +517,7 @@ export const deliverWorkOrder = createServerFn({ method: "POST" })
         order[0].worker_id == null ? null : num(order[0].worker_id),
         text(order[0].product_name),
       );
+      const overhead = await overheadPerUnitBase(sql, context.userId, num(order[0].product_id));
       const remaining = num(order[0].quantity) - num(order[0].delivered_qty);
       if (data.quantity - remaining > 1e-9) {
         throw new Error(`بیش از باقی‌مانده سفارش (${formatMoney(remaining)}) نمی‌توان تحویل داد`);
@@ -544,9 +545,11 @@ export const deliverWorkOrder = createServerFn({ method: "POST" })
         if (short.length) throw new Error(`موجودی مواد نزد کارگران کافی نیست:\n${short.join("\n")}`);
         await sql`
           insert into work_deliveries (
-            user_id, work_order_id, quantity, occurred_on, notes, to_worker_id, to_work_order_id, wage_per_unit
+            user_id, work_order_id, quantity, occurred_on, notes, to_worker_id, to_work_order_id, wage_per_unit,
+            overhead_per_unit_base
           ) values (
-            ${context.userId}, ${data.id}, ${data.quantity}, ${data.occurredOn}, ${data.notes}, ${null}, ${null}, ${wage}
+            ${context.userId}, ${data.id}, ${data.quantity}, ${data.occurredOn}, ${data.notes}, ${null}, ${null}, ${wage},
+            ${overhead}
           )
         `;
         await sql`
@@ -620,10 +623,11 @@ export const deliverWorkOrder = createServerFn({ method: "POST" })
       }
       await sql`
         insert into work_deliveries (
-          user_id, work_order_id, quantity, occurred_on, notes, to_worker_id, to_work_order_id, wage_per_unit
+          user_id, work_order_id, quantity, occurred_on, notes, to_worker_id, to_work_order_id, wage_per_unit,
+          overhead_per_unit_base
         ) values (
           ${context.userId}, ${data.id}, ${data.quantity}, ${data.occurredOn}, ${data.notes},
-          ${toWorkerId}, ${childId}, ${wage}
+          ${toWorkerId}, ${childId}, ${wage}, ${overhead}
         )
       `;
       await sql`
