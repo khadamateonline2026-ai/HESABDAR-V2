@@ -662,6 +662,11 @@ html.theme-light .magnify-item.active .magnify-pill {
   box-shadow: -18px 0 40px #00000073, inset 0 0 0 1px #ffffff1f, 0 0 28px color-mix(in oklab, var(--color-primary) 28%, transparent);
 }
 
+/* منوی بسته بیرون از صفحه است ولی سایه‌اش لبه راست صفحه را تیره/صورتی می‌کرد؛ فقط وقتی بسته است سایه ندارد */
+.drawer-panel[aria-hidden="true"] {
+  box-shadow: none;
+}
+
 .drawer-link {
   background: transparent;
   border: 0;
