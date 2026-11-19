@@ -25,7 +25,7 @@ import { cn } from "@/lib/utils";
 
 export const Route = createFileRoute("/_app/cashbook")({ component: Page });
 
-const TITLE = "روزنامچه دخل";
+const TITLE = "روزنامچه";
 
 function Page() {
   return (
