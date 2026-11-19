@@ -1005,6 +1005,33 @@ export async function lockStock(sql: Sql, userId: string): Promise<void> {
 }
 
 /**
+ * قیمت مرجع هر واحد (ارز اصلی) برای ردیف فروش جدید: همان مبنایی که مقدار
+ * فروخته‌شده بیش از موجودی با آن حساب می‌شود، در لحظه ثبت فروش.
+ */
+export function saleRefUnitCost(inv: InventoryState, itemId: number | null): number | null {
+  if (itemId == null) return null;
+  const card = inv.products.find((c) => c.itemId === itemId) ?? inv.raw.find((c) => c.itemId === itemId);
+  return card ? card.unitCost : null;
+}
+
+/**
+ * ردیف‌های فروش قبلی که قیمت مرجع ندارند را با همان قیمت فعلی پر می‌کند
+ * (هیچ عددی تغییر نمی‌کند؛ از این به بعد ثابت می‌مانند). تعداد ردیف‌های پرشده را برمی‌گرداند.
+ */
+export async function backfillSaleRefCosts(sql: Sql, userId: string): Promise<number> {
+  const { pendingRefCosts } = await loadInventoryValuation(sql, userId);
+  let n = 0;
+  for (const [id, unit] of Object.entries(pendingRefCosts)) {
+    await sql`
+      update sales set ref_unit_cost_base = ${unit}
+      where id = ${Number(id)} and user_id = ${userId} and ref_unit_cost_base is null
+    `;
+    n += 1;
+  }
+  return n;
+}
+
+/**
  * سربار هر واحد (سایر مصارف کالا) به ارز اصلی، همان لحظه تحویل.
  * روی هر تحویل ذخیره می‌شود تا تغییر بعدی سربار، اسناد قبلی را تغییر ندهد.
  */
@@ -1017,7 +1044,7 @@ export async function overheadPerUnitBase(sql: Sql, userId: string, productId: n
 }
 
 export async function loadInventoryState(sql: Sql, userId: string): Promise<InventoryState> {
-  const { saleCosts: _costs, ...state } = await loadInventoryValuation(sql, userId);
+  const { saleCosts: _costs, pendingRefCosts: _pending, ...state } = await loadInventoryValuation(sql, userId);
   return state;
 }
 
@@ -1028,7 +1055,7 @@ export async function loadInventoryState(sql: Sql, userId: string): Promise<Inve
 export async function loadInventoryValuation(
   sql: Sql,
   userId: string,
-): Promise<InventoryState & { saleCosts: Record<number, number> }> {
+): Promise<InventoryState & { saleCosts: Record<number, number>; pendingRefCosts: Record<number, number> }> {
   const [itemRows, opening, purchases, sales, currencies, bomRows, orders, deliveries, overheadRows, allocRows] =
     await Promise.all([
       sql<Record<string, unknown>>`
@@ -1226,7 +1253,8 @@ export async function loadInventoryValuation(
     });
   }
   const saleCosts: Record<number, number> = {};
-  const shortfalls: { saleId: number; key: string; isRaw: boolean; qty: number }[] = [];
+  const shortfalls: { saleId: number; key: string; isRaw: boolean; qty: number; refCost: number | null }[] = [];
+  const saleLines: { saleId: number; key: string; isRaw: boolean; refCost: number | null }[] = [];
   for (const s of sales) {
     const name = text(s.item_name);
     const id = s.item_id == null ? null : num(s.item_id);
@@ -1234,6 +1262,9 @@ export async function loadInventoryValuation(
     const qty = num(s.quantity);
     const isRaw = kindOf(id, name) === "raw";
     const saleId = num(s.id);
+    // قیمت مرجع هر واحد هنگام ثبت فروش (برای مقدار فروخته‌شده بیش از موجودی).
+    const refCost = s.ref_unit_cost_base == null ? null : num(s.ref_unit_cost_base);
+    saleLines.push({ saleId, key: k, isRaw, refCost });
     events.push({
       date: text(s.occurred_on),
       rank: 4,
@@ -1242,7 +1273,7 @@ export async function loadInventoryValuation(
         const lots = isRaw ? raw : product;
         const onHand = Math.max(0, lots.get(k)?.qty ?? 0);
         saleCosts[saleId] = takeLot(lots, k, qty);
-        if (qty > onHand + 1e-9) shortfalls.push({ saleId, key: k, isRaw, qty: qty - onHand });
+        if (qty > onHand + 1e-9) shortfalls.push({ saleId, key: k, isRaw, qty: qty - onHand, refCost });
       },
     });
   }
@@ -1309,17 +1340,31 @@ export async function loadInventoryValuation(
     for (const extra of overheadsByProduct[productId] ?? []) sum += extra.amount;
     return sum;
   }
-  // Sold more than was on hand: the missing part is costed at the item's
-  // current/reference cost instead of 0.
+  /** Current reference unit cost of an item (what an oversold quantity was costed at before snapshots). */
+  function currentRefUnit(key: string, isRaw: boolean): number | null {
+    const it = key.startsWith("id:") ? byId.get(Number(key.slice(3))) : undefined;
+    if (!it) return null;
+    const lot = (isRaw ? raw : product).get(key);
+    return lot && lot.qty > 1e-9 ? lot.value / lot.qty : referenceCost(it, isRaw ? 0 : bomCost(it.id));
+  }
+  // Sold more than was on hand: the missing part is costed at the reference
+  // unit cost frozen on the sale line when it was saved (ref_unit_cost_base),
+  // so a later price change does not move past profit. Lines saved before the
+  // snapshot existed (null) keep the old behaviour: the current reference cost.
   for (const sf of shortfalls) {
-    const it = sf.key.startsWith("id:") ? byId.get(Number(sf.key.slice(3))) : undefined;
-    if (!it) continue;
-    const lot = (sf.isRaw ? raw : product).get(sf.key);
-    const unit = lot && lot.qty > 1e-9 ? lot.value / lot.qty : referenceCost(it, sf.isRaw ? 0 : bomCost(it.id));
+    const unit = sf.refCost ?? currentRefUnit(sf.key, sf.isRaw);
+    if (unit == null) continue;
     saleCosts[sf.saleId] = (saleCosts[sf.saleId] ?? 0) + sf.qty * unit;
+  }
+  const pendingRefCosts: Record<number, number> = {};
+  for (const line of saleLines) {
+    if (line.refCost != null) continue;
+    const unit = currentRefUnit(line.key, line.isRaw);
+    if (unit != null) pendingRefCosts[line.saleId] = unit;
   }
   return {
     saleCosts,
+    pendingRefCosts,
     products: items.filter((i) => i.kind === "product").map((i) => card(i, product.get(`id:${i.id}`), bomCost(i.id))),
     raw: items.filter((i) => i.kind === "raw").map((i) => card(i, raw.get(`id:${i.id}`), 0)),
     workerRaw: items

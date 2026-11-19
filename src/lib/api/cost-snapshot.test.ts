@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { applyMigrations, createTestDb, seedUser, type TestDb } from "@/lib/testing/pglite-db";
-import { loadInventoryValuation, overheadPerUnitBase } from "./helpers";
+import { backfillSaleRefCosts, loadInventoryState, loadInventoryValuation, overheadPerUnitBase, saleRefUnitCost } from "./helpers";
 
 const U = "user-snap";
 
@@ -150,5 +150,55 @@ test("migration 0040 freezes existing deliveries at the overhead in force at dep
   assert.equal(later.saleCosts[r[0].id], 520);
   // The current cost estimate for new production follows the new overhead.
   assert.equal(await overheadPerUnitBase(db.sql, U, prod), 80);
+  await db.close();
+});
+
+test("saveSaleInvoice stores the reference unit cost on every sale line (re-snapshotted when the invoice is edited)", () => {
+  const body = handlerSource("invoices.ts", "saveSaleInvoice");
+  const ins = body.split("insert into sales")[1] ?? "";
+  assert.ok(ins.slice(0, 600).includes("ref_unit_cost_base"));
+  assert.ok(ins.slice(0, 600).includes("saleRefUnitCost(inv, l.itemId)"));
+});
+
+test("oversold quantity keeps the cost frozen at sale time when the purchase price changes later", async () => {
+  const db = await createTestDb();
+  const ids = await db.tx((sql) => seedUser(sql, U));
+  const id = await item(db, "دکمه", "raw", 100);
+  await buy(db, ids.afnId, id, "دکمه", 5, 100, "2026-01-01");
+  // Snapshot as saveSaleInvoice does it: card unit cost at save time (100).
+  const ref = saleRefUnitCost(await loadInventoryState(db.sql, U), id);
+  assert.equal(ref, 100);
+  const s1 = await sell(db, ids.afnId, id, "دکمه", 8, "2026-01-02", ref); // 3 more than on hand
+  const before = await loadInventoryValuation(db.sql, U);
+  assert.equal(before.saleCosts[s1], 800); // 5 × 100 + 3 × 100
+  await db.sql`update items set purchase_price = ${250} where id = ${id}`;
+  const after = await loadInventoryValuation(db.sql, U);
+  // Old code: 5 × 100 + 3 × 250 = 1250 — past profit changed.
+  assert.equal(after.saleCosts[s1], 800);
+  await db.close();
+});
+
+test("old sale lines without a snapshot: same number as before, then frozen by the backfill", async () => {
+  const db = await createTestDb({ upTo: "0040_delivery_overhead_snapshot.sql" });
+  const ids = await db.tx((sql) => seedUser(sql, U));
+  const id = await item(db, "دکمه", "raw", 100);
+  await buy(db, ids.afnId, id, "دکمه", 5, 100, "2026-01-01");
+  const s1 = await sell(db, ids.afnId, id, "دکمه", 8, "2026-01-02");
+  const prod = await item(db, "پیراهن", "product", 400);
+  const s2 = await sell(db, ids.afnId, prod, "پیراهن", 2, "2026-01-02"); // nothing on hand
+  const old = await loadInventoryValuation(db.sql, U);
+  await applyMigrations(db.pg);
+  const atDeploy = await loadInventoryValuation(db.sql, U);
+  assert.deepEqual(atDeploy.saleCosts, old.saleCosts);
+  assert.equal(await backfillSaleRefCosts(db.sql, U), 2);
+  const filled = await loadInventoryValuation(db.sql, U);
+  assert.deepEqual(filled.saleCosts, old.saleCosts);
+  assert.equal(filled.saleCosts[s1], 800);
+  assert.equal(filled.saleCosts[s2], 800);
+  assert.equal(await backfillSaleRefCosts(db.sql, U), 0);
+  await db.sql`update items set purchase_price = ${250} where id in (${id}, ${prod})`;
+  const later = await loadInventoryValuation(db.sql, U);
+  assert.equal(later.saleCosts[s1], 800);
+  assert.equal(later.saleCosts[s2], 800);
   await db.close();
 });

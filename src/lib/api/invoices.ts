@@ -15,6 +15,7 @@ import {
   MAIN_WAREHOUSE,
   nextDocNo,
   requireProfile,
+  saleRefUnitCost,
   sqlOf,
 } from "./helpers";
 import { assertOwned } from "./ownership";
@@ -786,11 +787,11 @@ export const saveSaleInvoice = createServerFn({ method: "POST" })
         await sql`
           insert into sales (
             user_id, customer_id, item_id, item_name, quantity, unit_id, unit_price, currency_id,
-            account_id, occurred_on, notes, status, invoice_no, invoice_id, line_no
+            account_id, occurred_on, notes, status, invoice_no, invoice_id, line_no, ref_unit_cost_base
           ) values (
             ${context.userId}, ${data.customerId}, ${l.itemId}, ${l.itemName.trim()}, ${l.quantity},
             ${l.unitId}, ${l.unitPrice}, ${data.currencyId}, ${data.accountId}, ${data.occurredOn},
-            ${l.notes ?? ""}, ${"final"}, ${invoiceNo}, ${id}, ${lineNo}
+            ${l.notes ?? ""}, ${"final"}, ${invoiceNo}, ${id}, ${lineNo}, ${saleRefUnitCost(inv, l.itemId)}
           )
         `;
         lineNo += 1;
