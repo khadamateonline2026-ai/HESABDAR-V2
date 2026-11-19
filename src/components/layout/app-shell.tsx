@@ -166,7 +166,11 @@ export function AppShell() {
         >
           <Menu className="size-5" />
         </button>
-        <div className="min-w-0 flex-1" />
+        <div className="min-w-0 flex-1">
+          <p className="app-company-name truncate text-sm font-bold leading-tight" title={company?.name || "دفتر حساب"}>
+            {company?.name || "دفتر حساب"}
+          </p>
+        </div>
         <div className="flex shrink-0 items-center gap-3 text-2xs font-medium leading-none whitespace-nowrap sm:text-xs">
           <OfflineStatus />
           <span className="text-muted">{dateParts.weekday}</span>

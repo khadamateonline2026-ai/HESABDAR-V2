@@ -61,7 +61,6 @@ function Dashboard() {
     enabled: Boolean(data?.profile),
   });
   const d = dash.data;
-  const company = data?.company;
   const production = data?.settings.productionEnabled !== false;
   const salesTab = production ? "product" : "raw";
   const salesFocus: UsageFocus = { page: "sales", path: "/sales", tab: salesTab };
@@ -96,9 +95,6 @@ function Dashboard() {
   return (
     <div className="dash-board-ink space-y-4">
       <DashTabs />
-      <div>
-        <h1 className="text-2xl font-semibold">{company?.name || "دفتر حساب"}</h1>
-      </div>
 
       {dash.isPending ? (
         <div className="h-40 animate-pulse rounded-md bg-border/60" />
