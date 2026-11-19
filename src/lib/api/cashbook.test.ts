@@ -95,6 +95,9 @@ test("روزنامچه دخل: opening + in − out equals the حساب‌ها b
   assert.equal(r6(balances.get(afn)!), 6480);
   // USD: 1000 − 20 − 5 = 975
   assert.equal(r6(balances.get(usd)!), 975);
+  // Current balance does not depend on the selected period.
+  const day = await cashbookData(db.sql, U, { from: "2026-11-02", to: "2026-11-02" });
+  for (const a of day.accounts) assert.equal(r6(a.currentBalance), r6(balances.get(a.accountId)!), a.name);
   // Any date split: first part's closing is the next part's opening, last closing = balance.
   for (const cut of ["2026-11-02", "2026-11-04", "2026-11-06"]) {
     const next = new Date(Date.parse(cut) + 86400000).toISOString().slice(0, 10);

@@ -90,6 +90,10 @@ export type CashAccountSummary = {
   closing: number;
   baseIn: number;
   baseOut: number;
+  /** Actual balance right now (whole history, independent of the period) = حساب‌ها balance. */
+  currentBalance: number;
+  /** currentBalance at today's rate (base currency). */
+  currentBaseNow: number;
   /** Opening / closing converted at today's rate of the account currency. */
   openingBaseNow: number;
   closingBaseNow: number;
@@ -409,6 +413,10 @@ export async function cashbookData(
     let totalOut = 0;
     let baseIn = 0;
     let baseOut = 0;
+    let current = num(a.opening_balance);
+    for (const m of movements) {
+      if (m.accountId === id) current += m.amountIn - m.amountOut;
+    }
     for (const m of movements) {
       if (m.accountId !== id || m.date > to) continue;
       if (m.date < from) {
@@ -432,10 +440,12 @@ export async function cashbookData(
       totalIn,
       totalOut,
       closing,
+      currentBalance: current,
       baseIn,
       baseOut,
       openingBaseNow: opening * nowRate,
       closingBaseNow: closing * nowRate,
+      currentBaseNow: current * nowRate,
     };
   });
   const byAcc = new Map(accounts.map((a) => [a.accountId, a]));
