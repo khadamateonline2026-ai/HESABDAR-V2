@@ -7,6 +7,7 @@ import { createTestDb, ensureRuntimeColumns, seedUser, type TestDb } from "@/lib
 import { canView, canWrite } from "@/lib/permissions";
 import { loadCatalogs } from "./helpers";
 import { cashbookData } from "./cashbook";
+import { buildLedger } from "@/lib/cashbook-ledger";
 
 const U = "user-cashbook";
 const r6 = (n: number) => Math.round(n * 1e6) / 1e6;
@@ -112,6 +113,51 @@ test("روزنامچه دخل: opening + in − out equals the حساب‌ها b
   await db.close();
 });
 
+test("روزنامچه دخل «جزئیات»: running balance per currency (all accounts) and per account (one selected)", async () => {
+  const db = await createTestDb();
+  const { afn, usd } = await seed(db);
+  // A second AFN till: its rows join the same AFN block.
+  const afnId = (await db.sql<{ currency_id: number }>`select currency_id from accounts where id = ${afn}`)[0].currency_id;
+  const afn2 = (
+    await db.sql<{ id: number }>`insert into accounts (user_id, name, currency_id, opening_balance) values (${U}, ${"دخل دوم"}, ${afnId}, ${100}) returning id`
+  )[0].id;
+  await db.sql`insert into expenses (user_id, title, amount, currency_id, account_id, occurred_on) values (${U}, ${"چای"}, ${30}, ${afnId}, ${afn2}, ${"2026-11-04"})`;
+  const balances = new Map((await loadCatalogs(db.sql, U)).accounts.map((a) => [a.id, a.balance]));
+  for (const [from, to] of [
+    ["2000-01-01", "2100-01-01"],
+    ["2026-11-03", "2026-11-05"],
+    ["2026-11-04", "2026-11-04"],
+  ] as const) {
+    const d = await cashbookData(db.sql, U, { from, to });
+    const blocks = buildLedger(d);
+    assert.equal(blocks.length, 2, "one block per currency");
+    for (const b of blocks) {
+      const accs = d.accounts.filter((a) => a.currencyId === b.currencyId);
+      assert.equal(r6(b.opening), r6(accs.reduce((s, a) => s + a.opening, 0)));
+      assert.equal(r6(b.closing), r6(accs.reduce((s, a) => s + a.closing, 0)));
+      assert.equal(r6(b.opening + b.totalIn - b.totalOut), r6(b.closing));
+      let run = b.opening;
+      for (const r of b.rows) {
+        run += r.m.amountIn - r.m.amountOut;
+        assert.equal(r6(r.running), r6(run));
+      }
+      if (b.rows.length) assert.equal(r6(b.rows[b.rows.length - 1].running), r6(b.closing));
+      if (to === "2100-01-01") assert.equal(r6(b.closing), r6(accs.reduce((s, a) => s + balances.get(a.accountId)!, 0)), "closing = حساب‌ها");
+    }
+    // Every movement appears exactly once.
+    assert.equal(blocks.reduce((s, b) => s + b.rows.length, 0), d.movements.length);
+  }
+  // One account selected: its block = that account; running equals the server's per-account running.
+  for (const id of [afn, afn2, usd]) {
+    const d = await cashbookData(db.sql, U, { from: "2026-11-02", to: "2026-11-06", accountId: id });
+    const [b] = buildLedger(d);
+    assert.equal(r6(b.opening), r6(d.accounts[0].opening));
+    b.rows.forEach((r) => assert.equal(r6(r.running), r6(r.m.running!)));
+    assert.equal(r6(b.closing), r6(d.accounts[0].closing));
+  }
+  await db.close();
+});
+
 test("روزنامچه دخل: every source lands in its group with the right direction", async () => {
   const db = await createTestDb();
   const { afn } = await seed(db);
@@ -179,9 +225,22 @@ test("روزنامچه دخل: seller, accountant and supervisor can open it; no
   const api = readFileSync(join(process.cwd(), "src/lib/api/cashbook.ts"), "utf8");
   assert.ok(api.includes("await requireProfile(sql, context.userId)"), "server fn must allow every signed-in role");
   assert.ok(!/\b(insert|update|delete)\s+(into|from)?\s*\w+/i.test(api.replace(/\/\*[\s\S]*?\*\//g, "")), "read-only");
-  const route = readFileSync(join(process.cwd(), "src/routes/_app/reports.daily.tsx"), "utf8");
-  assert.ok(route.includes('createFileRoute("/_app/reports/daily")'));
+  // Lives beside the dashboard now (/cashbook), same reports guard as before (every role can view).
+  const page = readFileSync(join(process.cwd(), "src/routes/_app/cashbook.tsx"), "utf8");
+  assert.ok(page.includes('createFileRoute("/_app/cashbook")'));
+  assert.ok(page.includes('<Guard area="reports">'));
+  // Old address redirects.
+  const old = readFileSync(join(process.cwd(), "src/routes/_app/reports.daily.tsx"), "utf8");
+  assert.ok(old.includes('createFileRoute("/_app/reports/daily")'));
+  assert.ok(/throw redirect\(\{ to: "\/cashbook"/.test(old), "old /reports/daily redirects to /cashbook");
+  // Gone from reports tabs and side menu; dashboard and cashbook share the two tabs.
   const layout = readFileSync(join(process.cwd(), "src/routes/_app/reports.tsx"), "utf8");
-  assert.ok(layout.includes('{ to: "/reports/daily", label: "روزنامچه دخل" }'));
+  assert.ok(!layout.includes("/reports/daily"));
+  const shell = readFileSync(join(process.cwd(), "src/components/layout/app-shell.tsx"), "utf8");
+  assert.ok(!shell.includes("/reports/daily"));
+  const tabs = readFileSync(join(process.cwd(), "src/components/dash-tabs.tsx"), "utf8");
+  assert.ok(tabs.includes('to: "/"') && tabs.includes('to: "/cashbook"'));
+  const dash = readFileSync(join(process.cwd(), "src/routes/_app/index.tsx"), "utf8");
+  assert.ok(dash.includes("<DashTabs />") && page.includes("<DashTabs />"));
   assert.ok(layout.includes('<Guard area="reports">'), "other reports keep their existing guard");
 });
