@@ -545,6 +545,14 @@ html.theme-light .dash-card.list-card {
   padding: 4px;
 }
 
+/* ── پرداخت و دریافت: تب یک‌لایه، بدون لایه پس‌زمینه پشت دکمه‌ها
+   (برای برگرداندن: همین بلوک یا کلاس pay-tabs-flat در payments.tsx را حذف کنید) ── */
+.list-tabs.pay-tabs-flat {
+  background: transparent;
+  border-radius: 0;
+  padding: 0;
+}
+
 .app-topbar {
   background: color-mix(in oklab, var(--color-fg) 18%, var(--color-bg)) !important;
   border-bottom-left-radius: 14px;
