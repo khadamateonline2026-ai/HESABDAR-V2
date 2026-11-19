@@ -65,14 +65,13 @@ const GROUPS: NavGroup[] = [
       { to: "/reports/receivables", label: "طلبات", area: "reports" },
       { to: "/reports/payables", label: "بدهی‌ها", area: "reports" },
       { to: "/reports/history", label: "تاریخچه", area: "reports" },
-      { to: "/reports/daily", label: "روزنامچه دخل", area: "reports" },
     ],
   },
 ];
 
 /** Glass look for purchase/sales/payments/workers/reports (revert: set false or git revert). */
 const GLASS_SECTIONS = true;
-const GLASS_SECTION_RE = /^\/(purchase|sales|payments|workers|reports|expenses)(\/|$)/;
+const GLASS_SECTION_RE = /^\/(purchase|sales|payments|workers|reports|expenses|cashbook)(\/|$)/;
 
 function groupLabelForPath(pathname: string): string {
   for (const group of GROUPS) {

@@ -14,6 +14,7 @@ import { Route as LoginRouteImport } from './routes/login'
 import { Route as ResetPasswordRouteImport } from './routes/reset-password'
 import { Route as ResetRolePinRouteImport } from './routes/reset-role-pin'
 import { Route as AppIndexRouteImport } from './routes/_app/index'
+import { Route as AppCashbookRouteImport } from './routes/_app/cashbook'
 import { Route as AppExpensesRouteImport } from './routes/_app/expenses'
 import { Route as AppNotesRouteImport } from './routes/_app/notes'
 import { Route as AppPaymentsRouteImport } from './routes/_app/payments'
@@ -64,6 +65,11 @@ const ResetRolePinRoute = ResetRolePinRouteImport.update({
 const AppIndexRoute = AppIndexRouteImport.update({
   id: '/',
   path: '/',
+  getParentRoute: () => AppRoute,
+} as any)
+const AppCashbookRoute = AppCashbookRouteImport.update({
+  id: '/cashbook',
+  path: '/cashbook',
   getParentRoute: () => AppRoute,
 } as any)
 const AppExpensesRoute = AppExpensesRouteImport.update({
@@ -207,6 +213,7 @@ export interface FileRoutesByFullPath {
   '/login': typeof LoginRoute
   '/reset-password': typeof ResetPasswordRoute
   '/reset-role-pin': typeof ResetRolePinRoute
+  '/cashbook': typeof AppCashbookRoute
   '/expenses': typeof AppExpensesRoute
   '/notes': typeof AppNotesRoute
   '/payments': typeof AppPaymentsRoute
@@ -239,6 +246,7 @@ export interface FileRoutesByTo {
   '/login': typeof LoginRoute
   '/reset-password': typeof ResetPasswordRoute
   '/reset-role-pin': typeof ResetRolePinRoute
+  '/cashbook': typeof AppCashbookRoute
   '/expenses': typeof AppExpensesRoute
   '/notes': typeof AppNotesRoute
   '/payments': typeof AppPaymentsRoute
@@ -273,6 +281,7 @@ export interface FileRoutesById {
   '/login': typeof LoginRoute
   '/reset-password': typeof ResetPasswordRoute
   '/reset-role-pin': typeof ResetRolePinRoute
+  '/_app/cashbook': typeof AppCashbookRoute
   '/_app/expenses': typeof AppExpensesRoute
   '/_app/notes': typeof AppNotesRoute
   '/_app/payments': typeof AppPaymentsRoute
@@ -309,6 +318,7 @@ export interface FileRouteTypes {
     | '/login'
     | '/reset-password'
     | '/reset-role-pin'
+    | '/cashbook'
     | '/expenses'
     | '/notes'
     | '/payments'
@@ -341,6 +351,7 @@ export interface FileRouteTypes {
     | '/login'
     | '/reset-password'
     | '/reset-role-pin'
+    | '/cashbook'
     | '/expenses'
     | '/notes'
     | '/payments'
@@ -374,6 +385,7 @@ export interface FileRouteTypes {
     | '/login'
     | '/reset-password'
     | '/reset-role-pin'
+    | '/_app/cashbook'
     | '/_app/expenses'
     | '/_app/notes'
     | '/_app/payments'
@@ -447,6 +459,13 @@ declare module '@tanstack/react-router' {
       path: '/'
       fullPath: '/'
       preLoaderRoute: typeof AppIndexRouteImport
+      parentRoute: typeof AppRoute
+    }
+    '/_app/cashbook': {
+      id: '/_app/cashbook'
+      path: '/cashbook'
+      fullPath: '/cashbook'
+      preLoaderRoute: typeof AppCashbookRouteImport
       parentRoute: typeof AppRoute
     }
     '/_app/expenses': {
@@ -662,6 +681,7 @@ const AppReportsRouteWithChildren = AppReportsRoute._addFileChildren(
 )
 
 interface AppRouteChildren {
+  AppCashbookRoute: typeof AppCashbookRoute
   AppExpensesRoute: typeof AppExpensesRoute
   AppNotesRoute: typeof AppNotesRoute
   AppPaymentsRoute: typeof AppPaymentsRoute
@@ -687,6 +707,7 @@ interface AppRouteChildren {
 }
 
 const AppRouteChildren: AppRouteChildren = {
+  AppCashbookRoute: AppCashbookRoute,
   AppExpensesRoute: AppExpensesRoute,
   AppNotesRoute: AppNotesRoute,
   AppPaymentsRoute: AppPaymentsRoute,

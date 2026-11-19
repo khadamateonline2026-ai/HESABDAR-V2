@@ -2,6 +2,7 @@ import { createFileRoute, Link } from "@tanstack/react-router";
 import { useQuery } from "@tanstack/react-query";
 import { AlertTriangle, ChevronDown, Info } from "lucide-react";
 import { useMemo, useState, type ReactNode } from "react";
+import { DashTabs } from "@/components/dash-tabs";
 import { useAppData } from "@/components/layout/app-shell";
 import { AfAmount } from "@/components/invoice-ui";
 import { getDashboard } from "@/lib/api/dashboard";
@@ -94,6 +95,7 @@ function Dashboard() {
 
   return (
     <div className="dash-board-ink space-y-4">
+      <DashTabs />
       <div>
         <h1 className="text-2xl font-semibold">{company?.name || "دفتر حساب"}</h1>
       </div>
